@@ -1,6 +1,6 @@
 # Mermaid Atlas
 
-A local browser workbench for very large Mermaid diagrams. It renders Mermaid source directly with
+A React browser workbench for very large Mermaid diagrams. It renders Mermaid source directly with
 an increased edge allowance and ELK layout, then adds pan, zoom, search, node selection, and direct
 neighbor navigation.
 

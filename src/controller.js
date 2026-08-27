@@ -1,6 +1,5 @@
 import mermaid from "mermaid";
 import elkLayouts from "@mermaid-js/layout-elk";
-import "./styles.css";
 
 const sample = `flowchart LR
     Source[Paste Mermaid code] --> Render[Render locally]
@@ -9,139 +8,6 @@ const sample = `flowchart LR
     Select --> Neighbors[Inspect attached nodes]
     Explore --> Large[No 500-edge ceiling]
     Neighbors --> Large`;
-
-const app = document.querySelector("#app");
-
-app.innerHTML = `
-  <main class="workbench">
-    <aside class="rail" aria-label="Diagram controls">
-      <header class="brand">
-        <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></div>
-        <div>
-          <p class="eyebrow">Local graph workbench</p>
-          <h1>Mermaid Atlas</h1>
-        </div>
-      </header>
-
-      <section class="source-panel">
-        <div class="section-heading">
-          <label for="source">Mermaid source</label>
-          <span id="source-size">0 chars</span>
-        </div>
-        <textarea id="source" spellcheck="false" aria-describedby="source-help"></textarea>
-        <p id="source-help" class="hint">Paste raw Mermaid or Markdown containing fenced Mermaid blocks.</p>
-        <div id="block-picker-wrap" class="block-picker-wrap" hidden>
-          <label for="block-picker">Diagram in Markdown</label>
-          <select id="block-picker"></select>
-        </div>
-        <div class="source-actions">
-          <label class="file-button" for="file-input">Open file</label>
-          <input id="file-input" type="file" accept=".mmd,.mermaid,.md,.markdown,.txt" />
-          <button id="render" class="primary" type="button">Render diagram</button>
-        </div>
-      </section>
-
-      <div class="panel-resizer" data-resize="source" role="separator" aria-label="Resize Mermaid source section" aria-orientation="horizontal" tabindex="0"><span></span></div>
-
-      <section class="index-panel" aria-labelledby="index-title">
-        <div class="section-heading">
-          <h2 id="index-title">Graph index</h2>
-          <span id="graph-stats">Not rendered</span>
-        </div>
-        <label class="search">
-          <span aria-hidden="true">⌕</span>
-          <input id="node-search" type="search" placeholder="Find a node" autocomplete="off" />
-          <kbd>/</kbd>
-        </label>
-        <div id="node-list" class="node-list empty-state">Render a diagram to build its index.</div>
-      </section>
-
-      <div class="panel-resizer" data-resize="index" role="separator" aria-label="Resize Graph Index and Selection sections" aria-orientation="horizontal" tabindex="0"><span></span></div>
-
-      <section class="inspector" aria-live="polite">
-        <div class="section-heading">
-          <h2>Selection</h2>
-          <button id="clear-selection" class="text-button" type="button" disabled>Clear</button>
-        </div>
-        <div id="selection-content" class="empty-state">Select any node to isolate its immediate connections.</div>
-      </section>
-    </aside>
-
-    <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-label="Resize sidebar width" aria-orientation="vertical" tabindex="0"><span></span></div>
-
-    <section class="canvas-shell" aria-label="Rendered diagram">
-      <header class="canvas-toolbar">
-        <div class="status-group">
-          <span id="status-dot" class="status-dot idle"></span>
-          <span id="status">Ready for source</span>
-        </div>
-        <div class="toolbar-actions">
-          <button id="zoom-out" type="button" title="Zoom out" aria-label="Zoom out">−</button>
-          <output id="zoom-level" aria-label="Current zoom">100%</output>
-          <button id="zoom-in" type="button" title="Zoom in" aria-label="Zoom in">+</button>
-          <button id="fit" type="button">Fit graph</button>
-          <button id="actual-size" type="button">100%</button>
-          <button id="open-settings" type="button" title="Interaction settings" aria-label="Open interaction settings">Controls</button>
-        </div>
-      </header>
-      <div id="viewport" class="viewport" tabindex="0">
-        <div class="grid-plane" aria-hidden="true"></div>
-        <div id="stage" class="stage"></div>
-        <div id="canvas-empty" class="canvas-empty">
-          <div class="empty-glyph" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
-          <p>Paste a graph, then render it here.</p>
-          <small>Drag to move · scroll to zoom · click a node to inspect</small>
-        </div>
-      </div>
-      <footer class="canvas-footer">
-        <span>ELK layout</span>
-        <span>20,000 edge allowance</span>
-        <span>Rendered on this device</span>
-      </footer>
-    </section>
-  </main>
-  <dialog id="settings-dialog" class="settings-dialog">
-    <form method="dialog">
-      <header>
-        <div>
-          <p class="eyebrow">Canvas controls</p>
-          <h2>Interaction settings</h2>
-        </div>
-        <button value="close" class="dialog-close" aria-label="Close settings">×</button>
-      </header>
-      <div class="setting-control">
-        <div class="setting-label">
-          <label for="zoom-sensitivity">Zoom and pinch sensitivity</label>
-          <output id="zoom-sensitivity-value">1.00×</output>
-        </div>
-        <input id="zoom-sensitivity" type="range" min="0.25" max="3" step="0.05" value="1" />
-        <p>Controls mouse-wheel zoom and native trackpad pinch acceleration.</p>
-      </div>
-      <div class="setting-control">
-        <div class="setting-label">
-          <label for="pan-sensitivity">Drag movement sensitivity</label>
-          <output id="pan-sensitivity-value">1.00×</output>
-        </div>
-        <input id="pan-sensitivity" type="range" min="0.25" max="2.5" step="0.05" value="1" />
-        <p>Controls how far the graph moves for the same pointer distance.</p>
-      </div>
-      <div class="setting-control device-control">
-        <div class="setting-label">
-          <label for="pointer-device">Scroll gesture behavior</label>
-        </div>
-        <select id="pointer-device">
-          <option value="trackpad">Trackpad: scroll pans, pinch zooms</option>
-          <option value="mouse">Mouse: wheel zooms</option>
-        </select>
-        <p>Trackpad mode applies movement sensitivity to two-finger scrolling.</p>
-      </div>
-      <footer>
-        <button id="reset-settings" type="button">Reset defaults</button>
-        <button value="done" class="primary">Done</button>
-      </footer>
-    </form>
-  </dialog>
-`;
 
 const elements = {
   rail: document.querySelector(".rail"),
@@ -160,6 +26,8 @@ const elements = {
   statusDot: document.querySelector("#status-dot"),
   stats: document.querySelector("#graph-stats"),
   search: document.querySelector("#node-search"),
+  groupIndex: document.querySelector("#group-index"),
+  indexSort: document.querySelector("#index-sort"),
   nodeList: document.querySelector("#node-list"),
   selection: document.querySelector("#selection-content"),
   clearSelection: document.querySelector("#clear-selection"),
@@ -180,16 +48,22 @@ const elements = {
 };
 
 let transform = { x: 0, y: 0, scale: 1 };
+let transformRevision = 0;
 let graph = { nodes: new Map(), edges: [], incoming: new Map(), outgoing: new Map(), markerCache: new Map() };
 let selectedKey = null;
+let keyboardNavigation = null;
+const collapsedGroupKeys = new Set();
 let markdownBlocks = [];
 let renderSequence = 0;
 const sensitivityStorageKey = "mermaid-atlas-interaction-settings";
 const defaultSensitivity = { zoom: 1, pan: 1, device: "trackpad" };
 let sensitivity = loadSensitivity();
 const panelSizeStorageKey = "mermaid-atlas-panel-sizes";
-const defaultPanelSizes = { source: 228, index: 105, sidebar: 360 };
+const defaultPanelSizes = { source: 228, index: 136, sidebar: 360 };
 let panelSizes = loadPanelSizes();
+const indexSettingsStorageKey = "mermaid-atlas-index-settings:v1";
+const defaultIndexSettings = { grouped: false, sort: "label-asc" };
+let indexSettings = loadIndexSettings();
 
 function loadSensitivity() {
   try {
@@ -228,6 +102,30 @@ function loadPanelSizes() {
   }
 }
 
+function loadIndexSettings() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(indexSettingsStorageKey));
+    const allowedSorts = new Set(["label-asc", "label-desc", "connections-desc", "connections-asc"]);
+    return {
+      grouped: stored?.grouped === true,
+      sort: allowedSorts.has(stored?.sort) ? stored.sort : defaultIndexSettings.sort,
+    };
+  } catch {
+    return { ...defaultIndexSettings };
+  }
+}
+
+function updateIndexControls() {
+  elements.groupIndex.setAttribute("aria-pressed", String(indexSettings.grouped));
+  elements.groupIndex.classList.toggle("active", indexSettings.grouped);
+  elements.indexSort.value = indexSettings.sort;
+  try {
+    localStorage.setItem(indexSettingsStorageKey, JSON.stringify(indexSettings));
+  } catch {
+    // Index controls remain usable when browser storage is unavailable.
+  }
+}
+
 function applyPanelSizes() {
   elements.rail.style.setProperty("--source-panel-height", `${panelSizes.source}px`);
   elements.rail.style.setProperty("--index-panel-height", `${panelSizes.index}px`);
@@ -261,35 +159,52 @@ function setSidebarWidth(value) {
 }
 
 mermaid.registerLayoutLoaders(elkLayouts);
-mermaid.initialize({
-  startOnLoad: false,
-  securityLevel: "strict",
-  maxEdges: 20_000,
-  maxTextSize: 5_000_000,
-  deterministicIds: false,
-  theme: "base",
-  layout: "elk",
-  flowchart: {
-    defaultRenderer: "elk",
-    htmlLabels: true,
-    useMaxWidth: false,
-    curve: "basis",
-    nodeSpacing: 48,
-    rankSpacing: 72,
-  },
-  themeVariables: {
-    background: "#f7f8fa",
-    primaryColor: "#eef4ff",
-    primaryTextColor: "#172033",
-    primaryBorderColor: "#59749b",
-    lineColor: "#8997ab",
-    secondaryColor: "#f1edff",
-    tertiaryColor: "#e9f7f2",
-    clusterBkg: "#f3f5f8",
-    clusterBorder: "#aab5c4",
-    fontFamily: "IBM Plex Sans, ui-sans-serif, system-ui, sans-serif",
-  },
-});
+
+function initializeMermaid(theme) {
+  const dark = theme === "dark";
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: "strict",
+    maxEdges: 20_000,
+    maxTextSize: 5_000_000,
+    deterministicIds: false,
+    theme: "base",
+    layout: "elk",
+    flowchart: {
+      defaultRenderer: "elk",
+      htmlLabels: true,
+      useMaxWidth: false,
+      curve: "basis",
+      nodeSpacing: 48,
+      rankSpacing: 72,
+    },
+    themeVariables: dark ? {
+      background: "#151b23",
+      primaryColor: "#253348",
+      primaryTextColor: "#e7edf6",
+      primaryBorderColor: "#7187a5",
+      lineColor: "#8290a3",
+      secondaryColor: "#302b46",
+      tertiaryColor: "#203b36",
+      clusterBkg: "#1c2531",
+      clusterBorder: "#59677a",
+      fontFamily: "IBM Plex Sans, ui-sans-serif, system-ui, sans-serif",
+    } : {
+      background: "#f7f8fa",
+      primaryColor: "#eef4ff",
+      primaryTextColor: "#172033",
+      primaryBorderColor: "#59749b",
+      lineColor: "#8997ab",
+      secondaryColor: "#f1edff",
+      tertiaryColor: "#e9f7f2",
+      clusterBkg: "#f3f5f8",
+      clusterBorder: "#aab5c4",
+      fontFamily: "IBM Plex Sans, ui-sans-serif, system-ui, sans-serif",
+    },
+  });
+}
+
+initializeMermaid(document.querySelector(".app-root")?.dataset.theme);
 
 function setStatus(message, state = "idle") {
   elements.status.textContent = message;
@@ -301,7 +216,7 @@ function extractMermaidBlocks(value) {
 }
 
 function activeSource() {
-  return markdownBlocks.length ? markdownBlocks[Number(elements.blockPicker.value) || 0] : elements.source.value.trim();
+  return elements.source.value.trim();
 }
 
 function updateSourceMeta() {
@@ -309,11 +224,34 @@ function updateSourceMeta() {
 }
 
 function updateBlockPicker() {
-  markdownBlocks = extractMermaidBlocks(elements.source.value);
+  const selectedIndex = Math.min(Number(elements.blockPicker.value) || 0, Math.max(0, markdownBlocks.length - 1));
   elements.blockPickerWrap.hidden = markdownBlocks.length === 0;
   elements.blockPicker.innerHTML = markdownBlocks
     .map((block, index) => `<option value="${index}">Diagram ${index + 1} · ${block.split("\n")[0]}</option>`)
     .join("");
+  elements.blockPicker.value = String(selectedIndex);
+}
+
+function loadSource(value) {
+  const blocks = extractMermaidBlocks(value);
+  markdownBlocks = blocks;
+  elements.source.value = blocks[0] || value;
+  updateSourceMeta();
+  updateBlockPicker();
+}
+
+function updateSourceFromEditor() {
+  const pastedBlocks = extractMermaidBlocks(elements.source.value);
+  if (pastedBlocks.length) {
+    loadSource(elements.source.value);
+    return;
+  }
+  if (markdownBlocks.length) {
+    const selectedIndex = Number(elements.blockPicker.value) || 0;
+    markdownBlocks[selectedIndex] = elements.source.value;
+    updateBlockPicker();
+  }
+  updateSourceMeta();
 }
 
 function canonical(value) {
@@ -332,15 +270,34 @@ function nodeKey(node) {
 function indexRenderedGraph() {
   const svg = elements.stage.querySelector("svg");
   const nodes = new Map();
+  const clusters = [...svg.querySelectorAll("g.cluster")]
+    .map((cluster, index) => {
+      const bounds = cluster.getBoundingClientRect();
+      const label = (cluster.querySelector(".cluster-label")?.textContent || cluster.dataset.id || `Subgraph ${index + 1}`)
+        .trim()
+        .replace(/\s+/g, " ");
+      return {
+        key: cluster.dataset.id || cluster.id || `subgraph-${index}`,
+        label,
+        bounds,
+        area: bounds.width * bounds.height,
+      };
+    })
+    .sort((a, b) => a.area - b.area);
 
   svg.querySelectorAll("g.node").forEach((node) => {
     const key = nodeKey(node);
     const label = (node.querySelector(".nodeLabel")?.textContent || node.textContent || key).trim().replace(/\s+/g, " ");
+    const bounds = node.getBoundingClientRect();
+    const centerX = bounds.left + bounds.width / 2;
+    const centerY = bounds.top + bounds.height / 2;
+    const cluster = clusters.find(({ bounds: clusterBounds }) => centerX >= clusterBounds.left && centerX <= clusterBounds.right
+      && centerY >= clusterBounds.top && centerY <= clusterBounds.bottom);
     node.dataset.graphKey = key;
     node.setAttribute("tabindex", "0");
     node.setAttribute("role", "button");
     node.setAttribute("aria-label", `${label}. Select to show attached nodes.`);
-    nodes.set(key, { key, label, element: node });
+    nodes.set(key, { key, label, element: node, groupKey: cluster?.key, groupLabel: cluster?.label });
   });
 
   const resolveKey = (candidate) => {
@@ -372,11 +329,15 @@ function indexRenderedGraph() {
     const to = dataEndpoints?.to || (endClass ? resolveKey(endClass.slice(3)) : undefined);
     if (!nodes.has(from) || !nodes.has(to)) return;
     const visual = path.closest("g.edgePath") || path;
+    const label = path.dataset.id
+      ? svg.querySelector(`g.edgeLabel .label[data-id="${CSS.escape(path.dataset.id)}"]`)?.closest("g.edgeLabel")
+      : undefined;
     edges.push({
       from,
       to,
       path,
       visual,
+      label,
       originalMarkerStart: path.getAttribute("marker-start"),
       originalMarkerEnd: path.getAttribute("marker-end"),
     });
@@ -387,6 +348,10 @@ function indexRenderedGraph() {
   edges.forEach(({ from, to }) => {
     outgoing.get(from)?.add(to);
     incoming.get(to)?.add(from);
+  });
+
+  nodes.forEach((node, key) => {
+    node.connections = new Set([...(incoming.get(key) || []), ...(outgoing.get(key) || [])]).size;
   });
 
   graph = { nodes, edges, incoming, outgoing, markerCache: new Map() };
@@ -401,6 +366,7 @@ function indexRenderedGraph() {
     });
     element.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
+        if (event.key === "Enter" && keyboardNavigation) return;
         event.preventDefault();
         selectNode(key);
       }
@@ -411,8 +377,8 @@ function indexRenderedGraph() {
 function renderNodeList() {
   const query = elements.search.value.trim().toLocaleLowerCase();
   const matches = [...graph.nodes.values()]
-    .filter(({ label, key }) => !query || `${label} ${key}`.toLocaleLowerCase().includes(query))
-    .sort((a, b) => a.label.localeCompare(b.label));
+    .filter(({ label, key, groupLabel }) => !query || `${label} ${key} ${groupLabel || ""}`.toLocaleLowerCase().includes(query))
+    .sort(compareIndexNodes);
 
   if (!matches.length) {
     elements.nodeList.className = "node-list empty-state";
@@ -420,13 +386,50 @@ function renderNodeList() {
     return;
   }
 
-  elements.nodeList.className = "node-list";
-  elements.nodeList.innerHTML = matches
-    .map(({ key, label }) => {
-      const attached = new Set([...(graph.incoming.get(key) || []), ...(graph.outgoing.get(key) || [])]);
-      return `<button type="button" data-node-key="${escapeAttribute(key)}" class="node-index-item${key === selectedKey ? " active" : ""}"><span>${escapeHTML(label)}</span><small>${attached.size}</small></button>`;
-    })
-    .join("");
+  if (!indexSettings.grouped) {
+    elements.nodeList.className = "node-list";
+    elements.nodeList.innerHTML = matches.map(nodeIndexItem).join("");
+    return;
+  }
+
+  const groupedMatches = new Map();
+  matches.forEach((node) => {
+    const groupKey = node.groupKey || "__ungrouped__";
+    if (!groupedMatches.has(groupKey)) {
+      groupedMatches.set(groupKey, { label: node.groupLabel || "Ungrouped", nodes: [] });
+    }
+    groupedMatches.get(groupKey).nodes.push(node);
+  });
+
+  const groups = [...groupedMatches.entries()].sort(([keyA, groupA], [keyB, groupB]) => {
+    if (keyA === "__ungrouped__") return 1;
+    if (keyB === "__ungrouped__") return -1;
+    return groupA.label.localeCompare(groupB.label);
+  });
+  elements.nodeList.className = "node-list grouped";
+  elements.nodeList.innerHTML = groups.map(([key, group]) => {
+    const expanded = !collapsedGroupKeys.has(key);
+    return `
+      <section class="node-index-group" data-group-key="${escapeAttribute(key)}">
+        <header>
+          <button type="button" class="group-heading-button" data-group-toggle="${escapeAttribute(key)}" aria-expanded="${expanded}">
+            <span><i aria-hidden="true"></i>${escapeHTML(group.label)}</span><small>${group.nodes.length}</small>
+          </button>
+        </header>
+        <div class="group-items"${expanded ? "" : " hidden"}>${group.nodes.map(nodeIndexItem).join("")}</div>
+      </section>`;
+  }).join("");
+}
+
+function compareIndexNodes(a, b) {
+  if (indexSettings.sort === "label-desc") return b.label.localeCompare(a.label);
+  if (indexSettings.sort === "connections-desc") return b.connections - a.connections || a.label.localeCompare(b.label);
+  if (indexSettings.sort === "connections-asc") return a.connections - b.connections || a.label.localeCompare(b.label);
+  return a.label.localeCompare(b.label);
+}
+
+function nodeIndexItem({ key, label, connections }) {
+  return `<button type="button" data-node-key="${escapeAttribute(key)}" class="node-index-item${key === selectedKey ? " active" : ""}"><span>${escapeHTML(label)}</span><small>${connections}</small></button>`;
 }
 
 function escapeHTML(value) {
@@ -469,6 +472,9 @@ function setEdgeRole(edge, role) {
   edge.path.classList.toggle("atlas-incoming", role === "incoming");
   edge.path.classList.toggle("atlas-outgoing", role === "outgoing");
   edge.path.classList.toggle("atlas-dimmed", !role);
+  edge.label?.classList.toggle("atlas-incoming", role === "incoming");
+  edge.label?.classList.toggle("atlas-outgoing", role === "outgoing");
+  edge.label?.classList.toggle("atlas-dimmed", !role);
   if (edge.originalMarkerStart) {
     edge.path.setAttribute("marker-start", role ? markerForRole(edge.originalMarkerStart, role) : edge.originalMarkerStart);
   }
@@ -493,6 +499,7 @@ function relationshipRows(keys, relationship) {
 function selectNode(key) {
   const selected = graph.nodes.get(key);
   if (!selected) return;
+  clearKeyboardPreview();
   selectedKey = key;
   const parents = graph.incoming.get(key) || new Set();
   const children = graph.outgoing.get(key) || new Set();
@@ -533,6 +540,7 @@ function selectNode(key) {
 }
 
 function clearSelection() {
+  clearKeyboardPreview();
   selectedKey = null;
   graph.edges.forEach((edge) => setEdgeRole(edge, undefined));
   elements.stage.querySelectorAll(".atlas-selected, .atlas-parent, .atlas-child, .atlas-bidirectional, .atlas-dimmed, .atlas-incoming, .atlas-outgoing").forEach((element) => {
@@ -545,6 +553,7 @@ function clearSelection() {
 }
 
 function applyTransform() {
+  transformRevision += 1;
   elements.stage.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`;
   elements.zoomLevel.value = `${Math.round(transform.scale * 100)}%`;
   elements.zoomLevel.textContent = elements.zoomLevel.value;
@@ -597,7 +606,103 @@ function zoomToNode(key) {
   applyTransform();
 }
 
-async function renderDiagram() {
+function clearKeyboardPreview() {
+  keyboardNavigation = null;
+  elements.stage.querySelectorAll(".atlas-preview").forEach((element) => element.classList.remove("atlas-preview"));
+  elements.selection.querySelectorAll(".keyboard-preview, .keyboard-browse-active").forEach((element) => {
+    element.classList.remove("keyboard-preview", "keyboard-browse-active");
+  });
+}
+
+function showNodesTogether(firstKey, secondKey) {
+  const first = graph.nodes.get(firstKey)?.element;
+  const second = graph.nodes.get(secondKey)?.element;
+  if (!first || !second) return;
+  const viewportRect = elements.viewport.getBoundingClientRect();
+  const bounds = [first, second].map((node) => {
+    const rect = node.getBoundingClientRect();
+    return {
+      left: (rect.left - viewportRect.left - transform.x) / transform.scale,
+      right: (rect.right - viewportRect.left - transform.x) / transform.scale,
+      top: (rect.top - viewportRect.top - transform.y) / transform.scale,
+      bottom: (rect.bottom - viewportRect.top - transform.y) / transform.scale,
+    };
+  });
+  const left = Math.min(...bounds.map((bound) => bound.left));
+  const right = Math.max(...bounds.map((bound) => bound.right));
+  const top = Math.min(...bounds.map((bound) => bound.top));
+  const bottom = Math.max(...bounds.map((bound) => bound.bottom));
+  const scale = Math.max(0.03, Math.min(2, (viewportRect.width - 120) / (right - left), (viewportRect.height - 120) / (bottom - top)));
+  transform.scale = scale;
+  transform.x = viewportRect.width / 2 - ((left + right) / 2) * scale;
+  transform.y = viewportRect.height / 2 - ((top + bottom) / 2) * scale;
+  applyTransform();
+}
+
+function showKeyboardPreview() {
+  elements.stage.querySelectorAll(".atlas-preview").forEach((element) => element.classList.remove("atlas-preview"));
+  elements.selection.querySelectorAll(".keyboard-preview, .keyboard-browse-active").forEach((element) => {
+    element.classList.remove("keyboard-preview", "keyboard-browse-active");
+  });
+  const key = keyboardNavigation?.candidates[keyboardNavigation.index];
+  if (!key) return;
+  graph.nodes.get(key)?.element.classList.add("atlas-preview");
+  const previewEdge = graph.edges.find((edge) => keyboardNavigation.relationship === "parent"
+    ? edge.from === key && edge.to === selectedKey
+    : edge.from === selectedKey && edge.to === key);
+  previewEdge?.path.classList.add("atlas-preview");
+  previewEdge?.label?.classList.add("atlas-preview");
+  const row = elements.selection.querySelector(`.relationship-row [data-node-key="${CSS.escape(key)}"]`)?.closest(".relationship-row");
+  row?.classList.add("keyboard-preview");
+  row?.closest(".relationship-group")?.classList.add("keyboard-browse-active");
+  row?.scrollIntoView({ block: "nearest" });
+  showNodesTogether(selectedKey, key);
+}
+
+function browseRelationship(relationship) {
+  const connections = relationship === "parent" ? graph.incoming.get(selectedKey) : graph.outgoing.get(selectedKey);
+  const candidates = [...(connections || [])].sort((a, b) => (
+    graph.nodes.get(a)?.label || a
+  ).localeCompare(graph.nodes.get(b)?.label || b));
+  if (!candidates.length) {
+    clearKeyboardPreview();
+    return true;
+  }
+  keyboardNavigation = { relationship, candidates, index: 0 };
+  showKeyboardPreview();
+  return true;
+}
+
+function cycleRelationship(direction) {
+  if (!keyboardNavigation) return false;
+  keyboardNavigation.index = (
+    keyboardNavigation.index + direction + keyboardNavigation.candidates.length
+  ) % keyboardNavigation.candidates.length;
+  showKeyboardPreview();
+  return true;
+}
+
+function commitKeyboardPreview() {
+  const key = keyboardNavigation?.candidates[keyboardNavigation.index];
+  if (!key) return false;
+  selectNode(key);
+  zoomToNode(key);
+  graph.nodes.get(key)?.element.focus({ preventScroll: true });
+  return true;
+}
+
+function zoomSelectedNode() {
+  if (!selectedKey) return false;
+  const key = selectedKey;
+  clearKeyboardPreview();
+  zoomToNode(key);
+  graph.nodes.get(key)?.element.focus({ preventScroll: true });
+  return true;
+}
+
+async function renderDiagram(preserveView = false) {
+  const shouldPreserveView = preserveView === true;
+  const selectionToRestore = shouldPreserveView ? selectedKey : null;
   const source = activeSource();
   if (!source) {
     setStatus("Add Mermaid source first", "error");
@@ -625,7 +730,14 @@ async function renderDiagram() {
     renderedSVG.style.height = `${viewBox.height}px`;
     elements.canvasEmpty.hidden = true;
     indexRenderedGraph();
-    requestAnimationFrame(fitGraph);
+    if (selectionToRestore) selectNode(selectionToRestore);
+    if (shouldPreserveView) applyTransform();
+    else {
+      const revisionBeforeFit = transformRevision;
+      requestAnimationFrame(() => {
+        if (sequence === renderSequence && selectedKey === null && transformRevision === revisionBeforeFit) fitGraph();
+      });
+    }
     setStatus("Diagram ready", "ready");
   } catch (error) {
     elements.stage.innerHTML = "";
@@ -643,6 +755,7 @@ async function renderDiagram() {
 }
 
 let drag = null;
+let suppressCanvasClick = false;
 elements.viewport.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) return;
   if (event.target.closest("g.node")) return;
@@ -663,7 +776,11 @@ elements.viewport.addEventListener("pointermove", (event) => {
 
 elements.viewport.addEventListener("pointerup", (event) => {
   if (!drag || drag.pointerId !== event.pointerId) return;
-  if (drag.moved) event.preventDefault();
+  if (drag.moved) {
+    event.preventDefault();
+    suppressCanvasClick = true;
+    setTimeout(() => { suppressCanvasClick = false; }, 0);
+  }
   elements.viewport.releasePointerCapture(event.pointerId);
   elements.viewport.classList.remove("dragging");
   drag = null;
@@ -708,30 +825,56 @@ elements.viewport.addEventListener("gestureend", finishNativeGesture);
 elements.viewport.addEventListener("gesturecancel", finishNativeGesture);
 
 elements.viewport.addEventListener("click", (event) => {
+  if (suppressCanvasClick) {
+    suppressCanvasClick = false;
+    return;
+  }
   if (event.target === elements.viewport || event.target.classList.contains("grid-plane")) clearSelection();
 });
 
 elements.source.addEventListener("input", () => {
-  updateSourceMeta();
-  updateBlockPicker();
+  updateSourceFromEditor();
 });
 elements.source.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") renderDiagram();
 });
-elements.blockPicker.addEventListener("change", renderDiagram);
+elements.blockPicker.addEventListener("change", () => {
+  elements.source.value = markdownBlocks[Number(elements.blockPicker.value) || 0] || "";
+  updateSourceMeta();
+  renderDiagram();
+});
 elements.render.addEventListener("click", renderDiagram);
 elements.file.addEventListener("change", async () => {
   const file = elements.file.files?.[0];
   if (!file) return;
-  elements.source.value = await file.text();
-  updateSourceMeta();
-  updateBlockPicker();
+  loadSource(await file.text());
   await renderDiagram();
 });
 elements.search.addEventListener("input", renderNodeList);
+elements.groupIndex.addEventListener("click", () => {
+  indexSettings = { ...indexSettings, grouped: !indexSettings.grouped };
+  updateIndexControls();
+  renderNodeList();
+});
+elements.indexSort.addEventListener("change", () => {
+  indexSettings = { ...indexSettings, sort: elements.indexSort.value };
+  updateIndexControls();
+  renderNodeList();
+});
 elements.nodeList.addEventListener("click", (event) => {
+  const groupButton = event.target.closest("[data-group-toggle]");
+  if (groupButton) {
+    const groupKey = groupButton.dataset.groupToggle;
+    if (collapsedGroupKeys.has(groupKey)) collapsedGroupKeys.delete(groupKey);
+    else collapsedGroupKeys.add(groupKey);
+    renderNodeList();
+    return;
+  }
   const button = event.target.closest("[data-node-key]");
-  if (button) selectNode(button.dataset.nodeKey);
+  if (button) {
+    selectNode(button.dataset.nodeKey);
+    zoomToNode(button.dataset.nodeKey);
+  }
 });
 elements.selection.addEventListener("click", (event) => {
   const zoomButton = event.target.closest("[data-zoom-key]");
@@ -830,17 +973,39 @@ elements.sidebarResizer.addEventListener("keydown", (event) => {
 });
 elements.sidebarResizer.addEventListener("dblclick", () => setSidebarWidth(defaultPanelSizes.sidebar));
 window.addEventListener("resize", () => elements.stage.querySelector("svg") && fitGraph());
+window.addEventListener("atlas-theme-change", (event) => {
+  initializeMermaid(event.detail?.theme);
+  if (elements.stage.querySelector("svg")) renderDiagram(true);
+});
 window.addEventListener("keydown", (event) => {
+  const isEditing = event.target.closest?.("input, textarea, select, button, [contenteditable='true'], dialog");
+  if (!isEditing && selectedKey) {
+    const unmodifiedKey = !event.metaKey && !event.ctrlKey && !event.altKey;
+    const shortcutKey = event.key.toLocaleLowerCase();
+    let handled = false;
+    if (event.key === "ArrowLeft") handled = browseRelationship("parent");
+    else if (event.key === "ArrowRight") handled = browseRelationship("child");
+    else if (event.key === "ArrowUp") handled = cycleRelationship(-1);
+    else if (event.key === "ArrowDown") handled = cycleRelationship(1);
+    else if (event.key === "Enter" || (unmodifiedKey && shortcutKey === "s")) handled = commitKeyboardPreview();
+    else if (unmodifiedKey && shortcutKey === "z") handled = zoomSelectedNode();
+    if (handled) {
+      event.preventDefault();
+      return;
+    }
+  }
   if (event.key === "/" && document.activeElement !== elements.source) {
     event.preventDefault();
     elements.search.focus();
   }
-  if (event.key === "Escape") clearSelection();
+  if (event.key === "Escape") {
+    if (keyboardNavigation) clearKeyboardPreview();
+    else clearSelection();
+  }
 });
 
-elements.source.value = sample;
+loadSource(sample);
 updateSensitivityControls();
+updateIndexControls();
 applyPanelSizes();
-updateSourceMeta();
-updateBlockPicker();
 renderDiagram();

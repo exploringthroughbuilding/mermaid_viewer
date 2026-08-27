@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import puppeteer from "puppeteer-core";
 import { createServer } from "vite";
 
@@ -21,6 +20,16 @@ try {
     if (message.type() === "error") browserErrors.push(message.text());
   });
   await page.goto("http://127.0.0.1:4174", { waitUntil: "networkidle0" });
+  await page.waitForFunction(
+    () => ["Diagram ready", "Render failed"].includes(document.querySelector("#status")?.textContent),
+    { timeout: 20_000 },
+  ).catch(async () => {
+    const state = await page.evaluate(() => ({
+      status: document.querySelector("#status")?.textContent,
+      detail: document.querySelector("#canvas-empty")?.textContent.trim(),
+    }));
+    throw new Error(`Initial render did not finish: ${JSON.stringify(state)}\n${browserErrors.join("\n")}`);
+  });
 
   const panelSizing = await page.evaluate(() => ({
     indexHeight: document.querySelector(".index-panel").getBoundingClientRect().height,
@@ -78,11 +87,128 @@ try {
   }
   await page.click('#settings-dialog button[value="done"]');
 
-  const source = await readFile(sourcePath, "utf8");
+  const groupedFixture = `flowchart LR
+subgraph Backend
+  A[API] --> B[Worker]
+  subgraph Store
+    C[(Cache)] --> D[(Database)]
+  end
+  B -->|cache write| C
+end
+E[Client] --> A`;
   await page.$eval("#source", (textarea, value) => {
     textarea.value = value;
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
-  }, source);
+  }, groupedFixture);
+  await page.click("#render");
+  await page.waitForFunction(() => ["Diagram ready", "Render failed"].includes(document.querySelector("#status")?.textContent));
+  const fixtureStatus = await page.$eval("#status", (element) => element.textContent);
+  if (fixtureStatus !== "Diagram ready") {
+    const detail = await page.$eval("#canvas-empty", (element) => element.textContent.trim());
+    throw new Error(`Grouped fixture render failed: ${detail}\n${browserErrors.join("\n")}`);
+  }
+  await page.click('#stage g.node[data-graph-key="B"]');
+  const activeEdgeLabel = await page.evaluate(() => {
+    const label = [...document.querySelectorAll("#stage g.edgeLabel")]
+      .find((element) => element.textContent.includes("cache write"));
+    return { found: Boolean(label), outgoing: label?.classList.contains("atlas-outgoing") };
+  });
+  await page.click('#stage g.node[data-graph-key="A"]');
+  const dimmedEdgeLabel = await page.evaluate(() => {
+    const label = [...document.querySelectorAll("#stage g.edgeLabel")]
+      .find((element) => element.textContent.includes("cache write"));
+    return { found: Boolean(label), dimmed: label?.classList.contains("atlas-dimmed") };
+  });
+  if (!activeEdgeLabel.found || !activeEdgeLabel.outgoing || !dimmedEdgeLabel.dimmed) {
+    throw new Error(`Edge labels did not follow edge highlighting: ${JSON.stringify({ activeEdgeLabel, dimmedEdgeLabel })}`);
+  }
+  const deferredFitRace = await page.evaluate(() => new Promise((resolve) => {
+    const statusElement = document.querySelector("#status");
+    const observer = new MutationObserver(() => {
+      if (statusElement.textContent !== "Diagram ready") return;
+      observer.disconnect();
+      document.querySelector('#node-list [data-node-key="B"]').click();
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const viewport = document.querySelector("#viewport").getBoundingClientRect();
+        const node = document.querySelector('#stage g.node[data-graph-key="B"]').getBoundingClientRect();
+        resolve({
+          selectedKey: document.querySelector("#stage g.node.atlas-selected")?.dataset.graphKey,
+          horizontalDelta: Math.abs((node.left + node.width / 2) - (viewport.left + viewport.width / 2)),
+          verticalDelta: Math.abs((node.top + node.height / 2) - (viewport.top + viewport.height / 2)),
+        });
+      }));
+    });
+    observer.observe(statusElement, { childList: true });
+    document.querySelector("#render").click();
+  }));
+  if (deferredFitRace.selectedKey !== "B"
+      || deferredFitRace.horizontalDelta > 2 || deferredFitRace.verticalDelta > 2) {
+    throw new Error(`Deferred fit overwrote a node zoom: ${JSON.stringify(deferredFitRace)}`);
+  }
+  await page.select("#index-sort", "connections-desc");
+  const connectionOrder = await page.$$eval(
+    "#node-list .node-index-item small",
+    (counts) => counts.map((count) => Number(count.textContent)),
+  );
+  await page.click("#group-index");
+  const indexControls = await page.evaluate(() => ({
+    groups: [...document.querySelectorAll(".node-index-group")].map((group) => ({
+      label: group.querySelector("header span")?.textContent,
+      nodes: [...group.querySelectorAll("[data-node-key]")].map((node) => node.dataset.nodeKey),
+    })),
+    indexedItems: document.querySelectorAll("#node-list [data-node-key]").length,
+    groupButtonText: document.querySelector("#group-index")?.textContent.trim(),
+    settings: JSON.parse(localStorage.getItem("mermaid-atlas-index-settings:v1")),
+  }));
+  const connectionSortValid = connectionOrder.every((count, index) => index === 0 || count <= connectionOrder[index - 1]);
+  if (!connectionSortValid || indexControls.indexedItems !== 5
+      || !indexControls.groups.some(({ label, nodes }) => label === "Backend" && nodes.includes("A") && nodes.includes("B"))
+      || !indexControls.groups.some(({ label, nodes }) => label === "Store" && nodes.includes("C") && nodes.includes("D"))
+      || !indexControls.groups.some(({ label, nodes }) => label === "Ungrouped" && nodes.includes("E"))
+      || indexControls.groupButtonText || !indexControls.settings.grouped || indexControls.settings.sort !== "connections-desc") {
+    throw new Error(`Graph index controls failed: ${JSON.stringify({ connectionOrder, indexControls })}`);
+  }
+  await page.evaluate(() => {
+    const backend = [...document.querySelectorAll(".group-heading-button")]
+      .find((button) => button.textContent.includes("Backend"));
+    backend?.click();
+  });
+  const collapsedGroup = await page.evaluate(() => {
+    const backend = [...document.querySelectorAll(".node-index-group")]
+      .find((group) => group.querySelector("header")?.textContent.includes("Backend"));
+    return {
+      expanded: backend?.querySelector(".group-heading-button")?.getAttribute("aria-expanded"),
+      hidden: backend?.querySelector(".group-items")?.hidden,
+    };
+  });
+  if (collapsedGroup.expanded !== "false" || !collapsedGroup.hidden) {
+    throw new Error(`Subgraph did not collapse: ${JSON.stringify(collapsedGroup)}`);
+  }
+  await page.evaluate(() => {
+    const backend = [...document.querySelectorAll(".group-heading-button")]
+      .find((button) => button.textContent.includes("Backend"));
+    backend?.click();
+  });
+  const expandedGroup = await page.evaluate(() => {
+    const backend = [...document.querySelectorAll(".node-index-group")]
+      .find((group) => group.querySelector("header")?.textContent.includes("Backend"));
+    return {
+      expanded: backend?.querySelector(".group-heading-button")?.getAttribute("aria-expanded"),
+      hidden: backend?.querySelector(".group-items")?.hidden,
+    };
+  });
+  if (expandedGroup.expanded !== "true" || expandedGroup.hidden) {
+    throw new Error(`Subgraph did not expand: ${JSON.stringify(expandedGroup)}`);
+  }
+  await page.click("#group-index");
+  await page.select("#index-sort", "label-asc");
+
+  const fileInput = await page.$("#file-input");
+  await fileInput.uploadFile(sourcePath);
+  await page.waitForFunction(() => (
+    document.querySelectorAll("#block-picker option").length > 1
+    && document.querySelector("#status")?.textContent === "Diagram ready"
+  ));
   const sourceLayout = await page.evaluate(() => {
     const panel = document.querySelector(".source-panel").getBoundingClientRect();
     const textarea = document.querySelector("#source");
@@ -93,9 +219,12 @@ try {
       editorInsidePanel: editor.left >= panel.left && editor.right <= panel.right && editor.bottom <= panel.bottom,
       controlsInsidePanel: renderButton.bottom <= panel.bottom,
       editorHeight: editor.height,
+      sourceIsRawMermaid: !textarea.value.includes("```") && /^\s*(flowchart|graph)\b/m.test(textarea.value),
+      blockCount: document.querySelectorAll("#block-picker option").length,
     };
   });
-  if (!sourceLayout.sourceScrollsInternally || !sourceLayout.editorInsidePanel
+  if (!sourceLayout.sourceIsRawMermaid || sourceLayout.blockCount < 2
+      || !sourceLayout.sourceScrollsInternally || !sourceLayout.editorInsidePanel
       || !sourceLayout.controlsInsidePanel) {
     throw new Error(`Source editor overflowed its panel: ${JSON.stringify(sourceLayout)}`);
   }
@@ -106,6 +235,11 @@ try {
     const detail = await page.$eval("#canvas-empty", (element) => element.textContent.trim());
     throw new Error(`Browser render failed: ${detail}\n${browserErrors.join("\n")}`);
   }
+  const selectedBlockIsRawMermaid = await page.$eval(
+    "#source",
+    (textarea) => !textarea.value.includes("```") && /^\s*(flowchart|graph)\b/m.test(textarea.value),
+  );
+  if (!selectedBlockIsRawMermaid) throw new Error("Selecting a Markdown diagram exposed fenced Markdown instead of Mermaid source");
   await page.waitForSelector("#stage g.node");
 
   const rendered = await page.evaluate(() => ({
@@ -152,16 +286,137 @@ try {
     throw new Error(`Incomplete interaction result: ${JSON.stringify({ rendered, selection })}`);
   }
 
-  await page.click('#selection-content [data-zoom-key="AppDelegate"]');
+  const childKeys = await page.$$eval(
+    "#selection-content .relationship-group.outgoing [data-node-key]",
+    (buttons) => buttons.map((button) => button.dataset.nodeKey),
+  );
+  await page.keyboard.press("ArrowRight");
+  await page.waitForSelector(
+    "#selection-content .relationship-group.outgoing.keyboard-browse-active .relationship-row.keyboard-preview",
+    { timeout: 5_000 },
+  ).catch(async () => {
+    const state = await page.evaluate(() => ({
+      selectedKey: document.querySelector("#stage g.node.atlas-selected")?.dataset.graphKey,
+      previewKey: document.querySelector("#stage g.node.atlas-preview")?.dataset.graphKey,
+      activeElement: document.activeElement?.outerHTML.slice(0, 200),
+    }));
+    throw new Error(`Right arrow did not enter child browse mode: ${JSON.stringify(state)}\n${browserErrors.join("\n")}`);
+  });
+  const initialPreview = await page.evaluate(() => {
+    const selected = document.querySelector("#stage g.node.atlas-selected");
+    const preview = document.querySelector("#stage g.node.atlas-preview");
+    const previewRow = document.querySelector("#selection-content .relationship-row.keyboard-preview [data-node-key]");
+    return {
+      selectedKey: selected?.dataset.graphKey,
+      previewKey: preview?.dataset.graphKey,
+      rowKey: previewRow?.dataset.nodeKey,
+      previewEdges: document.querySelectorAll("#stage path.atlas-preview").length,
+    };
+  });
+  if (initialPreview.selectedKey !== "AppDelegate" || !childKeys.includes(initialPreview.previewKey)
+      || initialPreview.rowKey !== initialPreview.previewKey || !initialPreview.previewEdges) {
+    throw new Error(`Right arrow did not preview a child while preserving selection: ${JSON.stringify({ childKeys, initialPreview })}`);
+  }
+  if (childKeys.length > 1) {
+    await page.keyboard.press("ArrowDown");
+    await page.waitForFunction(
+      (previousKey) => document.querySelector("#stage g.node.atlas-preview")?.dataset.graphKey !== previousKey,
+      {},
+      initialPreview.previewKey,
+    );
+    const cycledPreview = await page.evaluate(() => ({
+      selectedKey: document.querySelector("#stage g.node.atlas-selected")?.dataset.graphKey,
+      previewKey: document.querySelector("#stage g.node.atlas-preview")?.dataset.graphKey,
+      rowKey: document.querySelector("#selection-content .relationship-row.keyboard-preview [data-node-key]")?.dataset.nodeKey,
+    }));
+    if (cycledPreview.selectedKey !== "AppDelegate" || !childKeys.includes(cycledPreview.previewKey)
+        || cycledPreview.rowKey !== cycledPreview.previewKey) {
+      throw new Error(`ArrowDown changed selection or left the child level: ${JSON.stringify(cycledPreview)}`);
+    }
+  }
+
+  await page.keyboard.press("Escape");
+  const cancelledPreview = await page.evaluate(() => ({
+    selectedKey: document.querySelector("#stage g.node.atlas-selected")?.dataset.graphKey,
+    previewNodes: document.querySelectorAll("#stage g.node.atlas-preview").length,
+    previewRows: document.querySelectorAll("#selection-content .relationship-row.keyboard-preview").length,
+  }));
+  if (cancelledPreview.selectedKey !== "AppDelegate" || cancelledPreview.previewNodes || cancelledPreview.previewRows) {
+    throw new Error(`Escape did not cancel only the keyboard preview: ${JSON.stringify(cancelledPreview)}`);
+  }
+
+  await page.keyboard.press("ArrowRight");
+  const childToCommit = await page.$eval("#stage g.node.atlas-preview", (node) => node.dataset.graphKey);
+  await page.keyboard.press("s");
+  await page.waitForFunction(
+    (key) => document.querySelector("#stage g.node.atlas-selected")?.dataset.graphKey === key,
+    {},
+    childToCommit,
+  );
+  const parentKeys = await page.$$eval(
+    "#selection-content .relationship-group.incoming [data-node-key]",
+    (buttons) => buttons.map((button) => button.dataset.nodeKey),
+  );
+  await page.keyboard.press("ArrowLeft");
+  const parentPreview = await page.evaluate(() => ({
+    selectedKey: document.querySelector("#stage g.node.atlas-selected")?.dataset.graphKey,
+    previewKey: document.querySelector("#stage g.node.atlas-preview")?.dataset.graphKey,
+  }));
+  if (parentPreview.selectedKey !== childToCommit || !parentKeys.includes(parentPreview.previewKey)) {
+    throw new Error(`Left arrow did not preview a parent while preserving selection: ${JSON.stringify({ parentKeys, parentPreview })}`);
+  }
+  await page.keyboard.press("z");
+  const zoomShortcut = await page.evaluate(() => {
+    const viewport = document.querySelector("#viewport").getBoundingClientRect();
+    const node = document.querySelector("#stage g.node.atlas-selected").getBoundingClientRect();
+    return {
+      selectedKey: document.querySelector("#stage g.node.atlas-selected")?.dataset.graphKey,
+      previews: document.querySelectorAll("#stage .atlas-preview, #selection-content .keyboard-preview").length,
+      horizontalDelta: Math.abs((node.left + node.width / 2) - (viewport.left + viewport.width / 2)),
+      verticalDelta: Math.abs((node.top + node.height / 2) - (viewport.top + viewport.height / 2)),
+    };
+  });
+  if (zoomShortcut.selectedKey !== childToCommit || zoomShortcut.previews
+      || zoomShortcut.horizontalDelta > 2 || zoomShortcut.verticalDelta > 2) {
+    throw new Error(`Z did not cancel the preview and center the selection: ${JSON.stringify(zoomShortcut)}`);
+  }
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(
+    (key) => document.querySelector("#stage g.node.atlas-selected")?.dataset.graphKey === key,
+    {},
+    parentPreview.previewKey,
+  );
+  const keyboardNavigation = { initialPreview, cancelledPreview, childToCommit, parentPreview, zoomShortcut };
+  await page.click('#node-list [data-node-key="AppDelegate"]');
+
+  const selectionDragBounds = await page.$eval("#viewport", (viewport) => {
+    const bounds = viewport.getBoundingClientRect();
+    return { x: bounds.left + 8, y: bounds.top + 8 };
+  });
+  await page.mouse.move(selectionDragBounds.x, selectionDragBounds.y);
+  await page.mouse.down();
+  await page.mouse.move(selectionDragBounds.x + 40, selectionDragBounds.y, { steps: 4 });
+  await page.mouse.up();
+  const selectionPreservedAfterDrag = await page.$eval(
+    "#stage g.node.atlas-selected",
+    (node) => node.dataset.graphKey === "AppDelegate",
+  );
+  if (!selectionPreservedAfterDrag) throw new Error("Dragging the canvas cleared the selected node");
+
+  await page.mouse.click(selectionDragBounds.x, selectionDragBounds.y);
+  await page.waitForFunction(() => document.querySelector("#selection-content")?.classList.contains("empty-state"));
+  const transformBeforeIndexSelection = await page.$eval("#stage", (stage) => stage.style.transform);
+  await page.click('#node-list [data-node-key="AppDelegate"]');
   await page.waitForFunction(
     (previousTransform) => document.querySelector("#stage")?.style.transform !== previousTransform,
     {},
-    transformBeforeSelection,
+    transformBeforeIndexSelection,
   );
-  const explicitZoomVerified = await page.$eval(
+  const indexZoomVerified = await page.$eval(
     "#stage",
     (stage, previousTransform) => stage.style.transform !== previousTransform,
-    transformBeforeSelection,
+    transformBeforeIndexSelection,
   );
   const zoomCenter = await page.evaluate(() => {
     const viewport = document.querySelector("#viewport").getBoundingClientRect();
@@ -172,7 +427,7 @@ try {
     };
   });
   if (zoomCenter.horizontalDelta > 2 || zoomCenter.verticalDelta > 2) {
-    throw new Error(`Explicit zoom did not center the node: ${JSON.stringify(zoomCenter)}`);
+    throw new Error(`Graph Index selection did not center the node: ${JSON.stringify(zoomCenter)}`);
   }
 
   await page.click("#fit");
@@ -253,7 +508,7 @@ try {
   const panDistance = translationAfterDrag.x - translationBeforeDrag.x;
   if (Math.abs(panDistance - 60) > 2) throw new Error(`Pan sensitivity was not applied: distance ${panDistance}`);
 
-  console.log(JSON.stringify({ sourcePath, panelSizing, resizedPanels, resizedSidebar, savedSensitivity, sourceLayout, rendered, selectionVerified: true, explicitZoomVerified, zoomCenter, zoomRatio, nativePinchRatio, trackpadMovement, panDistance }, null, 2));
+  console.log(JSON.stringify({ sourcePath, panelSizing, resizedPanels, resizedSidebar, savedSensitivity, indexControls, collapsedGroup, expandedGroup, sourceLayout, rendered, selectionVerified: true, keyboardNavigation, selectionPreservedAfterDrag, indexZoomVerified, zoomCenter, zoomRatio, nativePinchRatio, trackpadMovement, panDistance }, null, 2));
 } finally {
   await browser?.close();
   await server.close();

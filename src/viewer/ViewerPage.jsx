@@ -4,6 +4,8 @@ import "./viewer.css";
 const themeStorageKey = "mermaid-atlas-theme:v1";
 
 function loadTheme() {
+  const requested = new URLSearchParams(window.location.search).get("theme");
+  if (requested === "dark" || requested === "light") return requested;
   try {
     return localStorage.getItem(themeStorageKey) === "dark" ? "dark" : "light";
   } catch {
@@ -118,6 +120,7 @@ export default function App() {
               <button id="zoom-in" type="button" title="Zoom in" aria-label="Zoom in">+</button>
               <button id="fit" type="button">Fit graph</button>
               <button id="actual-size" type="button">100%</button>
+              <button id="share-link" type="button" title="Copy a link that opens this diagram" aria-label="Copy share link">Share link</button>
               <button id="open-settings" type="button" title="Interaction settings" aria-label="Open interaction settings">Controls</button>
               <button
                 className="theme-toggle"

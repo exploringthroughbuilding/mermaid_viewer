@@ -16,6 +16,13 @@
   --coral: #dc684f;
   --mint: #3e9a7a;
   --shadow: 0 18px 55px rgb(29 43 64 / 12%);
+  /* Highlight roles share one palette between CSS and the marker clones made in JS. */
+  --role-selected: #d9573b;
+  --role-incoming: #6f4fb3;
+  --role-outgoing: #1f8a6a;
+  --role-both: #b8741c;
+  --role-preview: #c6872d;
+  --dim-opacity: .18;
 }
 
 * { box-sizing: border-box; }
@@ -183,12 +190,13 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .empty-state { color: var(--muted); font-size: 11px; line-height: 1.45; }
 .selected-node-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; gap: 6px; }
 .selected-node-name { min-width: 0; padding: 9px 10px; border-left: 3px solid var(--coral); background: #fff1ed; font: 600 12px/1.35 Manrope, sans-serif; }
+.selected-node-group { margin-top: 6px; color: var(--muted); font: 10px "IBM Plex Mono", monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zoom-here-button { min-height: 0; padding: 0 9px; border-color: #d2a599; color: #a24734; background: #fff8f6; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
 .connection-count { margin: 9px 0 5px; color: var(--muted); font: 10px "IBM Plex Mono", monospace; }
 .relationship-group { margin-top: 10px; }
 .relationship-group h3 { display: flex; align-items: center; gap: 6px; margin: 0; padding: 5px 2px; color: #526076; font: 600 10px/1.2 "IBM Plex Mono", monospace; text-transform: uppercase; letter-spacing: .05em; }
-.relationship-group h3 i { width: 13px; height: 3px; background: #7655b5; }
-.relationship-group.outgoing h3 i { background: #25866a; }
+.relationship-group h3 i { width: 13px; height: 3px; background: var(--role-incoming); }
+.relationship-group.outgoing h3 i { background: var(--role-outgoing); }
 .relationship-group h3 span { margin-left: auto; }
 .relationship-empty { padding: 5px 3px; }
 .relationship-note { margin-top: 12px; padding: 9px 10px; border-left: 3px solid #93a1b4; background: #f0f3f7; }
@@ -234,11 +242,13 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .settings-dialog footer { display: flex; justify-content: space-between; gap: 10px; padding: 14px 18px; }
 .settings-dialog footer button { min-width: 108px; }
 
-.viewport { position: relative; min-width: 0; min-height: 0; overflow: hidden; cursor: grab; touch-action: none; outline: none; background: #f7f8fa; }
+/* `contain` isolates the canvas so panning a huge SVG never invalidates the rest of the page. */
+.viewport { position: relative; min-width: 0; min-height: 0; overflow: hidden; cursor: grab; touch-action: none; outline: none; background: #f7f8fa; contain: layout paint style; }
 .viewport.dragging { cursor: grabbing; }
 .grid-plane { position: absolute; inset: 0; background-image: linear-gradient(#d9dee6 1px, transparent 1px), linear-gradient(90deg, #d9dee6 1px, transparent 1px), linear-gradient(#e9edf2 1px, transparent 1px), linear-gradient(90deg, #e9edf2 1px, transparent 1px); background-size: 80px 80px, 80px 80px, 16px 16px, 16px 16px; opacity: .72; }
 .stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; user-select: none; }
-.stage svg { display: block; max-width: none !important; overflow: visible; filter: drop-shadow(0 12px 22px rgb(28 44 67 / 7%)); }
+/* No drop-shadow filter here: a filter forces the whole SVG through an offscreen surface on every pan/zoom frame. */
+.stage svg { display: block; max-width: none !important; overflow: visible; }
 .canvas-empty { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; text-align: center; color: #657389; pointer-events: none; }
 .canvas-empty[hidden] { display: none; }
 .canvas-empty p { margin: 14px 0 4px; font: 600 15px Manrope, sans-serif; color: #445269; }
@@ -253,49 +263,37 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .empty-glyph::after { transform: rotate(22deg); }
 .canvas-footer { display: flex; align-items: center; justify-content: flex-end; gap: 18px; padding: 0 15px; border-top: 1px solid #d3dae3; color: #7b8798; background: #eef1f5; font: 9px "IBM Plex Mono", monospace; text-transform: uppercase; letter-spacing: .04em; }
 
-/* These classes are attached after Mermaid renders the SVG. */
-.stage .atlas-node { cursor: pointer; transition: opacity 120ms ease, filter 120ms ease; }
-.stage .atlas-node:hover { filter: brightness(.96) drop-shadow(0 2px 3px rgb(35 94 167 / 20%)); }
+/* These classes are attached after Mermaid renders the SVG. Only `.atlas-outline`
+   shapes receive strokes, so icons inside a node are never outlined; nodes
+   without a visible shape get a synthetic outline box instead. */
+.stage .atlas-node { cursor: pointer; }
+.stage:not(.atlas-large) :is(.atlas-node, .atlas-edge, .atlas-edge-label, .atlas-companion) { transition: opacity 120ms ease; }
 .stage .atlas-node[tabindex="0"]:focus { outline: none; }
-.stage .atlas-node[tabindex="0"]:focus-visible { filter: brightness(.94); }
-.stage .atlas-node.atlas-selected rect,
-.stage .atlas-node.atlas-selected polygon,
-.stage .atlas-node.atlas-selected circle,
-.stage .atlas-node.atlas-selected path,
-.stage rect.atlas-node.atlas-selected,
-.stage circle.atlas-node.atlas-selected { stroke: var(--coral) !important; stroke-width: 4px !important; }
-.stage .atlas-node.atlas-parent rect,
-.stage .atlas-node.atlas-parent polygon,
-.stage .atlas-node.atlas-parent circle,
-.stage .atlas-node.atlas-parent path,
-.stage rect.atlas-node.atlas-parent,
-.stage circle.atlas-node.atlas-parent { stroke: #7655b5 !important; stroke-width: 3px !important; stroke-dasharray: 8 4; }
-.stage .atlas-node.atlas-child rect,
-.stage .atlas-node.atlas-child polygon,
-.stage .atlas-node.atlas-child circle,
-.stage .atlas-node.atlas-child path,
-.stage rect.atlas-node.atlas-child,
-.stage circle.atlas-node.atlas-child { stroke: #25866a !important; stroke-width: 3px !important; }
-.stage .atlas-node.atlas-bidirectional rect,
-.stage .atlas-node.atlas-bidirectional polygon,
-.stage .atlas-node.atlas-bidirectional circle,
-.stage .atlas-node.atlas-bidirectional path,
-.stage rect.atlas-node.atlas-bidirectional,
-.stage circle.atlas-node.atlas-bidirectional { stroke: #be7a21 !important; stroke-width: 4px !important; }
-.stage .atlas-dimmed { opacity: .1 !important; }
-.stage path.atlas-incoming { stroke: #7655b5 !important; stroke-width: 3.5px !important; stroke-dasharray: 9 5; opacity: 1 !important; }
-.stage path.atlas-outgoing { stroke: #25866a !important; stroke-width: 3.5px !important; opacity: 1 !important; }
-.stage g.edgeLabel { transition: opacity 120ms ease; }
-.stage g.edgeLabel.atlas-incoming { color: #604294; opacity: 1 !important; }
-.stage g.edgeLabel.atlas-outgoing { color: #1d7058; opacity: 1 !important; }
-.stage g.edgeLabel.atlas-preview { color: #8b5715; opacity: 1 !important; }
-.stage .atlas-node.atlas-preview rect,
-.stage .atlas-node.atlas-preview polygon,
-.stage .atlas-node.atlas-preview circle,
-.stage .atlas-node.atlas-preview path,
-.stage rect.atlas-node.atlas-preview,
-.stage circle.atlas-node.atlas-preview { stroke: #c6872d !important; stroke-width: 5px !important; stroke-dasharray: 6 3; filter: drop-shadow(0 0 5px rgb(198 135 45 / 48%)); }
-.stage path.atlas-preview { stroke: #c6872d !important; stroke-width: 5px !important; opacity: 1 !important; }
+.stage .atlas-synthetic { fill: none !important; stroke: none; }
+.stage .atlas-node:hover .atlas-outline,
+.stage .atlas-node:focus-visible .atlas-outline { stroke: var(--blue) !important; stroke-width: 2.5px !important; }
+.stage .atlas-selected .atlas-outline,
+.stage .atlas-outline.atlas-selected { stroke: var(--role-selected) !important; stroke-width: 4px !important; }
+.stage .atlas-parent .atlas-outline,
+.stage .atlas-outline.atlas-parent { stroke: var(--role-incoming) !important; stroke-width: 3px !important; stroke-dasharray: 8 4; }
+.stage .atlas-child .atlas-outline,
+.stage .atlas-outline.atlas-child { stroke: var(--role-outgoing) !important; stroke-width: 3px !important; }
+.stage .atlas-bidirectional .atlas-outline,
+.stage .atlas-outline.atlas-bidirectional { stroke: var(--role-both) !important; stroke-width: 4px !important; }
+.stage .atlas-preview .atlas-outline,
+.stage .atlas-outline.atlas-preview { stroke: var(--role-preview) !important; stroke-width: 5px !important; stroke-dasharray: 6 3; }
+.stage line.atlas-outline.atlas-lit { stroke-width: 2px !important; stroke-dasharray: none; }
+.stage svg.atlas-has-selection :is(.atlas-node, .atlas-edge, .atlas-edge-label, .atlas-companion):not(.atlas-lit) { opacity: var(--dim-opacity) !important; }
+.stage .atlas-edge.atlas-incoming { stroke: var(--role-incoming) !important; stroke-dasharray: 9 5; opacity: 1 !important; }
+.stage .atlas-edge.atlas-outgoing { stroke: var(--role-outgoing) !important; opacity: 1 !important; }
+.stage .atlas-edge.atlas-preview { stroke: var(--role-preview) !important; stroke-dasharray: 6 3; opacity: 1 !important; }
+.stage g.link .atlas-edge.atlas-lit { stroke-dasharray: none; stroke-opacity: .75; }
+.stage .atlas-edge-label.atlas-incoming,
+.stage .atlas-edge-label.atlas-incoming :is(span, p, text, tspan) { color: var(--role-incoming) !important; fill: var(--role-incoming) !important; font-weight: 600; }
+.stage .atlas-edge-label.atlas-outgoing,
+.stage .atlas-edge-label.atlas-outgoing :is(span, p, text, tspan) { color: var(--role-outgoing) !important; fill: var(--role-outgoing) !important; font-weight: 600; }
+.stage .atlas-edge-label.atlas-preview,
+.stage .atlas-edge-label.atlas-preview :is(span, p, text, tspan) { color: var(--role-preview) !important; fill: var(--role-preview) !important; font-weight: 600; }
 
 .app-root[data-theme="dark"] {
   color-scheme: dark;
@@ -311,6 +309,12 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
   --coral: #f08a73;
   --mint: #66c3a2;
   --shadow: 0 18px 55px rgb(0 0 0 / 30%);
+  --role-selected: #ff8f73;
+  --role-incoming: #b8a2ff;
+  --role-outgoing: #5fd3a8;
+  --role-both: #f0b85a;
+  --role-preview: #f0b85a;
+  --dim-opacity: .22;
 }
 .app-root[data-theme="dark"] .workbench { background: #11161d; }
 .app-root[data-theme="dark"] .rail { border-color: #303947; scrollbar-color: #4a5668 transparent; }
@@ -353,6 +357,8 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .app-root[data-theme="dark"] .group-heading-button { color: #b6c2d3; background: transparent; }
 .app-root[data-theme="dark"] .group-heading-button:hover { background: #283442; }
 .app-root[data-theme="dark"] .selected-node-name { color: #ffd7ce; background: #3a2727; }
+.app-root[data-theme="dark"] .relationship-group h3 i { background: var(--role-incoming); }
+.app-root[data-theme="dark"] .relationship-group.outgoing h3 i { background: var(--role-outgoing); }
 .app-root[data-theme="dark"] .zoom-here-button { color: #ffc0b2; border-color: #78544d; background: #312425; }
 .app-root[data-theme="dark"] .relationship-group h3 { color: #adb9ca; }
 .app-root[data-theme="dark"] .relationship-note { border-color: #66758a; background: #202936; }
@@ -371,7 +377,6 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .app-root[data-theme="dark"] .settings-dialog header { background: #202834; }
 .app-root[data-theme="dark"] .viewport { background: #151b23; }
 .app-root[data-theme="dark"] .grid-plane { background-image: linear-gradient(#2d3745 1px, transparent 1px), linear-gradient(90deg, #2d3745 1px, transparent 1px), linear-gradient(#202833 1px, transparent 1px), linear-gradient(90deg, #202833 1px, transparent 1px); opacity: .82; }
-.app-root[data-theme="dark"] .stage svg { filter: drop-shadow(0 12px 22px rgb(0 0 0 / 28%)); }
 .app-root[data-theme="dark"] .canvas-empty { color: #8e9caf; }
 .app-root[data-theme="dark"] .canvas-empty p { color: #b8c4d4; }
 .app-root[data-theme="dark"] .empty-glyph span { background: #151b23; }
@@ -395,6 +400,10 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
   .theme-toggle-label { display: none; }
 }
 
+/* Scoped to our own controls on purpose: a global `* { transition-duration }` rule
+   also hits Mermaid's off-screen measuring elements and corrupts its layout. */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  .stage, button, .file-button, .panel-resizer, .sidebar-resizer, .theme-toggle-track, .theme-toggle-track i,
+  #source-line-highlight, .group-heading-button > span i, .stage .atlas-node, .stage .atlas-edge, .stage .atlas-edge-label, .stage .atlas-companion { transition: none !important; }
+  .status-dot { animation: none !important; }
 }

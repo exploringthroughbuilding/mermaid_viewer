@@ -1,8 +1,31 @@
+import { existsSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 import { createServer } from "vite";
 import { analyzeDiagram } from "../src/mermaid/diagram-adapters.js";
 import { diagramFixtures, viewerFixtures } from "../src/fixtures/diagram-fixtures.js";
 
+// Prefer the Chrome for Testing build that puppeteer caches, then a desktop Chrome.
+function discoverChrome() {
+  const cache = join(homedir(), ".cache", "puppeteer", "chrome");
+  const cached = existsSync(cache)
+    ? readdirSync(cache).sort().reverse().flatMap((version) => [
+      join(cache, version, "chrome-mac-arm64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"),
+      join(cache, version, "chrome-mac-x64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"),
+      join(cache, version, "chrome-linux64", "chrome"),
+    ])
+    : [];
+  const candidates = [
+    ...cached,
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+  ];
+  const found = candidates.find((candidate) => existsSync(candidate));
+  if (!found) throw new Error("No Chrome found. Set CHROME_PATH to a Chrome executable.");
+  return found;
+}
 const adapterFixtures = {
   "flowchart LR": "flowchart",
   "flowchart-elk LR": "flowchart",
@@ -50,8 +73,7 @@ const missingAdapters = adapterCoverage.filter(({ expected, actual }) => expecte
 if (missingAdapters.length) throw new Error(`Diagram adapter coverage failed: ${JSON.stringify(missingAdapters)}`);
 
 const fixturePath = process.argv[2] || new URL("../tests/fixtures/large-flowchart.mmd", import.meta.url).pathname;
-const chromePath = process.env.CHROME_PATH
-  || "/Users/bhavya/.cache/puppeteer/chrome/mac_arm-147.0.7727.57/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing";
+const chromePath = process.env.CHROME_PATH || discoverChrome();
 
 const server = await createServer({ server: { host: "127.0.0.1", port: 4174 } });
 let browser;
@@ -61,6 +83,8 @@ try {
   browser = await puppeteer.launch({ executablePath: chromePath, headless: true });
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 600 });
+  // Programmatic view changes animate; reduced motion keeps geometry assertions synchronous.
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
   page.setDefaultTimeout(120_000);
   const browserErrors = [];
   page.on("pageerror", (error) => browserErrors.push(error.message));
@@ -225,7 +249,8 @@ E[Client] --> A`;
   const dimmedEdgeLabel = await page.evaluate(() => {
     const label = [...document.querySelectorAll("#stage g.edgeLabel")]
       .find((element) => element.textContent.includes("cache write"));
-    return { found: Boolean(label), dimmed: label?.classList.contains("atlas-dimmed") };
+    const isolating = document.querySelector("#stage svg")?.classList.contains("atlas-has-selection");
+    return { found: Boolean(label), dimmed: Boolean(isolating && label && !label.classList.contains("atlas-lit")) };
   });
   if (!activeEdgeLabel.found || !activeEdgeLabel.outgoing || !dimmedEdgeLabel.dimmed) {
     throw new Error(`Edge labels did not follow edge highlighting: ${JSON.stringify({ activeEdgeLabel, dimmedEdgeLabel })}`);
@@ -271,7 +296,7 @@ E[Client] --> A`;
   const connectionSortValid = connectionOrder.every((count, index) => index === 0 || count <= connectionOrder[index - 1]);
   if (!connectionSortValid || indexControls.indexedItems !== 5
       || !indexControls.groups.some(({ label, nodes }) => label === "Backend" && nodes.includes("A") && nodes.includes("B"))
-      || !indexControls.groups.some(({ label, nodes }) => label === "Store" && nodes.includes("C") && nodes.includes("D"))
+      || !indexControls.groups.some(({ label, nodes }) => label === "Backend › Store" && nodes.includes("C") && nodes.includes("D"))
       || !indexControls.groups.some(({ label, nodes }) => label === "Ungrouped" && nodes.includes("E"))
       || indexControls.groupButtonText || !indexControls.settings.grouped || indexControls.settings.sort !== "connections-desc") {
     throw new Error(`Graph index controls failed: ${JSON.stringify({ connectionOrder, indexControls })}`);
@@ -370,7 +395,9 @@ E[Client] --> A`;
     text: document.querySelector("#selection-content")?.textContent.trim(),
     parents: document.querySelectorAll("#stage g.node.atlas-parent").length,
     children: document.querySelectorAll("#stage g.node.atlas-child").length,
-    dimmedNodes: document.querySelectorAll("#stage g.node.atlas-dimmed").length,
+    dimmedNodes: document.querySelector("#stage svg")?.classList.contains("atlas-has-selection")
+      ? document.querySelectorAll("#stage g.node:not(.atlas-lit)").length
+      : 0,
     incomingEdges: document.querySelectorAll("#stage path.atlas-incoming").length,
     outgoingEdges: document.querySelectorAll("#stage path.atlas-outgoing").length,
     incomingMarker: document.querySelector("#stage path.atlas-incoming")?.getAttribute("marker-end"),
@@ -616,6 +643,161 @@ E[Client] --> A`;
   const panDistance = translationAfterDrag.x - translationBeforeDrag.x;
   if (Math.abs(panDistance - 60) > 2) throw new Error(`Pan sensitivity was not applied: distance ${panDistance}`);
 
+  // --- Highlighting across diagram families ---------------------------------
+  const renderSource = async (value) => {
+    await page.$eval("#source", (textarea, next) => {
+      textarea.value = next;
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    }, value);
+    await page.click("#render");
+    await page.waitForFunction(() => ["Diagram ready", "Render failed"].includes(document.querySelector("#status")?.textContent));
+    const status = await page.$eval("#status", (element) => element.textContent);
+    if (status !== "Diagram ready") {
+      const detail = await page.$eval("#canvas-empty", (element) => element.textContent.trim());
+      throw new Error(`Render failed for fixture: ${detail}\n${browserErrors.join("\n")}`);
+    }
+  };
+
+  await renderSource(`flowchart LR
+  A@{ icon: "fa:user", form: "square", label: "User" }
+  B@{ icon: "fa:cog", label: "Naked icon" }
+  C[Plain]
+  A --> B --> C`);
+  const iconHighlight = await page.evaluate(() => {
+    const roleColor = getComputedStyle(document.querySelector(".app-root")).getPropertyValue("--role-selected").trim();
+    const select = (key) => document.querySelector(`#stage [data-graph-key="${key}"]`).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    select("B");
+    const naked = document.querySelector('#stage [data-graph-key="B"]');
+    const iconPaths = [...naked.querySelectorAll(":scope svg path")];
+    const nakedResult = {
+      synthetic: Boolean(naked.querySelector("rect.atlas-synthetic.atlas-outline")),
+      syntheticStroke: getComputedStyle(naked.querySelector("rect.atlas-synthetic")).stroke,
+      iconStroked: iconPaths.some((path) => getComputedStyle(path).stroke === roleColor || path.classList.contains("atlas-outline")),
+    };
+    select("A");
+    const boxed = document.querySelector('#stage [data-graph-key="A"]');
+    const boxedResult = {
+      synthetic: Boolean(boxed.querySelector("rect.atlas-synthetic")),
+      outlineCount: boxed.querySelectorAll(":scope > g > path.atlas-outline").length,
+      iconStroked: [...boxed.querySelectorAll(":scope svg path")].some((path) => path.classList.contains("atlas-outline")),
+    };
+    return { roleColor, nakedResult, boxedResult };
+  });
+  const rgbOf = (hex) => `rgb(${[1, 3, 5].map((index) => Number.parseInt(hex.slice(index, index + 2), 16)).join(", ")})`;
+  if (!iconHighlight.nakedResult.synthetic || iconHighlight.nakedResult.syntheticStroke !== rgbOf(iconHighlight.roleColor)
+      || iconHighlight.nakedResult.iconStroked || iconHighlight.boxedResult.synthetic || !iconHighlight.boxedResult.outlineCount
+      || iconHighlight.boxedResult.iconStroked) {
+    throw new Error(`Icon nodes were not outlined as boxes: ${JSON.stringify(iconHighlight)}`);
+  }
+
+  await renderSource(`sequenceDiagram
+  participant A as Alice
+  participant B as Bob
+  A->>B: hello
+  B-->>A: hi
+  A->>B: again`);
+  await page.click('#stage [data-graph-key="A"]');
+  const sequenceHighlight = await page.evaluate(() => ({
+    outgoing: document.querySelectorAll("#stage line.messageLine0.atlas-outgoing").length,
+    incoming: document.querySelectorAll("#stage line.messageLine1.atlas-incoming").length,
+    labelled: document.querySelectorAll("#stage text.messageText.atlas-edge-label.atlas-lit").length,
+    lifeline: Boolean(document.querySelector('#stage line.actor-line[data-id="A"].atlas-selected')),
+    bottomBox: [...document.querySelectorAll("#stage rect.actor-bottom")].some((rect) => rect.parentElement.classList.contains("atlas-selected")),
+    rows: document.querySelectorAll("#selection-content .relationship-row").length,
+  }));
+  if (sequenceHighlight.outgoing !== 2 || sequenceHighlight.incoming !== 1 || sequenceHighlight.labelled !== 3
+      || !sequenceHighlight.lifeline || !sequenceHighlight.bottomBox || sequenceHighlight.rows !== 2) {
+    throw new Error(`Sequence messages were not highlighted per direction: ${JSON.stringify(sequenceHighlight)}`);
+  }
+
+  await renderSource(`classDiagram
+  class Owner
+  class Dog
+  Owner "1" o-- "0..*" Dog : owns
+  Animal <|-- Dog`);
+  await page.click('#stage [data-graph-key="Dog"]');
+  const classHighlight = await page.evaluate(() => ({
+    children: [...document.querySelectorAll("#stage .atlas-child")].map((node) => node.dataset.graphKey).sort(),
+    edges: document.querySelectorAll("#stage path.relation.atlas-outgoing").length,
+    stats: document.querySelector("#graph-stats")?.textContent,
+  }));
+  if (classHighlight.children.join(",") !== "Animal,Owner" || classHighlight.edges !== 2) {
+    throw new Error(`Class cardinality relations were not detected: ${JSON.stringify(classHighlight)}`);
+  }
+
+  await renderSource(`stateDiagram-v2
+  [*] --> Idle
+  Idle --> Busy : work
+  Busy --> Idle
+  Busy --> [*]`);
+  await page.click('#stage [data-graph-key="Idle"]');
+  const stateHighlight = await page.evaluate(() => ({
+    incoming: document.querySelectorAll("#stage path.transition.atlas-incoming").length,
+    outgoing: document.querySelectorAll("#stage path.transition.atlas-outgoing").length,
+    startLabel: document.querySelector('#node-list [data-node-key="root_start"] span')?.textContent,
+    busyRole: document.querySelector('#stage [data-graph-key="Busy"]')?.classList.contains("atlas-bidirectional"),
+  }));
+  if (stateHighlight.incoming !== 2 || stateHighlight.outgoing !== 1 || stateHighlight.startLabel !== "Start" || !stateHighlight.busyRole) {
+    throw new Error(`State transitions were not resolved geometrically: ${JSON.stringify(stateHighlight)}`);
+  }
+
+  // --- Navigation keeps the zoom level -----------------------------------------
+  await page.$eval("#file-input", (input) => { input.value = ""; });
+  await fileInput.uploadFile(fixturePath);
+  // The upload reloads the Markdown blocks asynchronously; wait for block 1 to be back in the editor.
+  await page.waitForFunction(() => document.querySelector("#source")?.value.includes("N01[Source]") && document.querySelector("#status")?.textContent === "Diagram ready");
+  await page.select("#block-picker", "1");
+  await page.waitForFunction(() => document.querySelector("#status")?.textContent === "Diagram ready" && document.querySelector('#stage [data-graph-key="AppDelegate"]'));
+  await page.click("#fit");
+  await page.click('#stage g.node[data-graph-key="AppDelegate"]');
+  const listButton = await page.$('#node-list [data-node-key="AppDelegate"]');
+  const scaleBeforeBrowse = await page.$eval("#stage", (stage) => stage.style.transform.match(/scale\(([^)]+)\)/)?.[1]);
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("s");
+  await page.keyboard.press("ArrowLeft");
+  const scaleAfterBrowse = await page.$eval("#stage", (stage) => stage.style.transform.match(/scale\(([^)]+)\)/)?.[1]);
+  if (scaleBeforeBrowse !== scaleAfterBrowse) {
+    throw new Error(`Browsing neighbours changed the zoom level: ${scaleBeforeBrowse} -> ${scaleAfterBrowse}`);
+  }
+  const listStable = await page.evaluate((button) => document.contains(button) && button.classList.contains("active") === false, listButton);
+  const activeAfterCommit = await page.$eval("#node-list .node-index-item.active", (button) => button.dataset.nodeKey);
+  if (!listStable || !activeAfterCommit) throw new Error("Selecting a node rebuilt the Graph Index instead of toggling the active row");
+
+  // --- URL launch and share links -----------------------------------------------
+  await page.click("#share-link");
+  await page.waitForFunction(() => document.querySelector("#status")?.textContent.startsWith("Share link"));
+  const shareHash = await page.evaluate(() => window.location.hash);
+  if (!shareHash.startsWith("#pako:")) throw new Error(`Share link did not produce a pako hash: ${shareHash}`);
+  const sharedPage = await browser.newPage();
+  await sharedPage.setViewport({ width: 1200, height: 700 });
+  await sharedPage.goto(`http://127.0.0.1:4174/?theme=dark&select=Store${shareHash}`, { waitUntil: "networkidle0" });
+  await sharedPage.waitForFunction(() => document.querySelector("#status")?.textContent === "Diagram ready");
+  const sharedState = await sharedPage.evaluate(() => ({
+    theme: document.querySelector(".app-root")?.dataset.theme,
+    firstLine: document.querySelector("#source")?.value.split("\n")[0],
+    selected: document.querySelector("#stage .atlas-selected")?.dataset.graphKey,
+  }));
+  if (sharedState.theme !== "dark" || !/^flowchart/.test(sharedState.firstLine) || sharedState.selected !== "Store") {
+    throw new Error(`Share link did not restore the diagram: ${JSON.stringify(sharedState)}`);
+  }
+  await sharedPage.goto("http://127.0.0.1:4174/?example=sequence-core", { waitUntil: "networkidle0" });
+  await sharedPage.waitForFunction(() => document.querySelector("#status")?.textContent === "Diagram ready");
+  const exampleLaunch = await sharedPage.$eval("#source", (textarea) => textarea.value.split("\n")[0]);
+  if (exampleLaunch !== "sequenceDiagram") throw new Error(`?example did not load the catalog entry: ${exampleLaunch}`);
+  await sharedPage.goto("http://127.0.0.1:4174/?src=/tests/fixtures/large-flowchart.mmd&block=2", { waitUntil: "networkidle0" });
+  await sharedPage.waitForFunction(() => document.querySelector("#status")?.textContent === "Diagram ready");
+  const srcLaunch = await sharedPage.evaluate(() => ({
+    blocks: document.querySelectorAll("#block-picker option").length,
+    picked: document.querySelector("#block-picker")?.value,
+    hasAppDelegate: Boolean(document.querySelector('#stage [data-graph-key="AppDelegate"]')),
+  }));
+  if (srcLaunch.blocks !== 2 || srcLaunch.picked !== "1" || !srcLaunch.hasAppDelegate) {
+    throw new Error(`?src launch did not load the requested Markdown block: ${JSON.stringify(srcLaunch)}`);
+  }
+  await sharedPage.close();
+  const highlightCoverage = { iconHighlight, sequenceHighlight, classHighlight, stateHighlight, scaleAfterBrowse, sharedState, exampleLaunch, srcLaunch };
+
   const debugPage = await browser.newPage();
   await debugPage.setViewport({ width: 1440, height: 900 });
   debugPage.setDefaultTimeout(180_000);
@@ -636,7 +818,7 @@ E[Client] --> A`;
   if (debugResults.failed.length) throw new Error(`Debug syntax fixtures failed: ${JSON.stringify(debugResults.failed, null, 2)}`);
   if (!debugResults.scrollable) throw new Error(`Debug syntax gallery is not scrollable: ${JSON.stringify(debugResults)}`);
 
-  console.log(JSON.stringify({ fixturePath, adapterCoverage: `${adapterCoverage.length} declarations`, debugResults, panelSizing, exampleResults, highlightedSource, resizedPanels, resizedSidebar, savedSensitivity, indexControls, collapsedGroup, expandedGroup, sourceLayout, rendered, selectionVerified: true, keyboardNavigation, selectionPreservedAfterDrag, indexZoomVerified, zoomCenter, zoomRatio, nativePinchRatio, trackpadMovement, panDistance }, null, 2));
+  console.log(JSON.stringify({ fixturePath, adapterCoverage: `${adapterCoverage.length} declarations`, debugResults, panelSizing, exampleResults, highlightedSource, resizedPanels, resizedSidebar, savedSensitivity, indexControls, collapsedGroup, expandedGroup, sourceLayout, rendered, selectionVerified: true, keyboardNavigation, selectionPreservedAfterDrag, indexZoomVerified, zoomCenter, zoomRatio, nativePinchRatio, trackpadMovement, panDistance, highlightCoverage }, null, 2));
 } finally {
   await browser?.close();
   await server.close();

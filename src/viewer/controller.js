@@ -1,22 +1,20 @@
-import mermaid from "mermaid";
-import elkLayouts from "@mermaid-js/layout-elk";
+import { analyzeDiagram, matchSemanticItem } from "../mermaid/diagram-adapters.js";
+import { fixtureById, viewerFixtures } from "../fixtures/diagram-fixtures.js";
+import { configureMermaid, parseMermaid, renderMermaid } from "../mermaid/runtime.js";
 
-const sample = `flowchart LR
-    Source[Paste Mermaid code] --> Render[Render locally]
-    Render --> Explore[Pan and zoom]
-    Render --> Select[Select a node]
-    Select --> Neighbors[Inspect attached nodes]
-    Explore --> Large[No 500-edge ceiling]
-    Neighbors --> Large`;
+const sample = fixtureById("flowchart-core").source;
+const examples = Object.fromEntries(viewerFixtures.map((entry) => [entry.id, { label: `${entry.family} · ${entry.title}`, source: entry.source }]));
 
 const elements = {
   rail: document.querySelector(".rail"),
   workbench: document.querySelector(".workbench"),
   sidebarResizer: document.querySelector("#sidebar-resizer"),
   source: document.querySelector("#source"),
+  sourceLineHighlight: document.querySelector("#source-line-highlight"),
   sourceSize: document.querySelector("#source-size"),
   render: document.querySelector("#render"),
   file: document.querySelector("#file-input"),
+  examplePicker: document.querySelector("#example-picker"),
   blockPickerWrap: document.querySelector("#block-picker-wrap"),
   blockPicker: document.querySelector("#block-picker"),
   viewport: document.querySelector("#viewport"),
@@ -52,6 +50,8 @@ let transformRevision = 0;
 let graph = { nodes: new Map(), edges: [], incoming: new Map(), outgoing: new Map(), markerCache: new Map() };
 let selectedKey = null;
 let keyboardNavigation = null;
+let diagramAnalysis = analyzeDiagram(sample);
+let diagramKind = diagramAnalysis.id;
 const collapsedGroupKeys = new Set();
 let markdownBlocks = [];
 let renderSequence = 0;
@@ -158,50 +158,8 @@ function setSidebarWidth(value) {
   if (elements.stage.querySelector("svg")) applyTransform();
 }
 
-mermaid.registerLayoutLoaders(elkLayouts);
-
 function initializeMermaid(theme) {
-  const dark = theme === "dark";
-  mermaid.initialize({
-    startOnLoad: false,
-    securityLevel: "strict",
-    maxEdges: 20_000,
-    maxTextSize: 5_000_000,
-    deterministicIds: false,
-    theme: "base",
-    layout: "elk",
-    flowchart: {
-      defaultRenderer: "elk",
-      htmlLabels: true,
-      useMaxWidth: false,
-      curve: "basis",
-      nodeSpacing: 48,
-      rankSpacing: 72,
-    },
-    themeVariables: dark ? {
-      background: "#151b23",
-      primaryColor: "#253348",
-      primaryTextColor: "#e7edf6",
-      primaryBorderColor: "#7187a5",
-      lineColor: "#8290a3",
-      secondaryColor: "#302b46",
-      tertiaryColor: "#203b36",
-      clusterBkg: "#1c2531",
-      clusterBorder: "#59677a",
-      fontFamily: "IBM Plex Sans, ui-sans-serif, system-ui, sans-serif",
-    } : {
-      background: "#f7f8fa",
-      primaryColor: "#eef4ff",
-      primaryTextColor: "#172033",
-      primaryBorderColor: "#59749b",
-      lineColor: "#8997ab",
-      secondaryColor: "#f1edff",
-      tertiaryColor: "#e9f7f2",
-      clusterBkg: "#f3f5f8",
-      clusterBorder: "#aab5c4",
-      fontFamily: "IBM Plex Sans, ui-sans-serif, system-ui, sans-serif",
-    },
-  });
+  configureMermaid(theme);
 }
 
 initializeMermaid(document.querySelector(".app-root")?.dataset.theme);
@@ -219,8 +177,36 @@ function activeSource() {
   return elements.source.value.trim();
 }
 
+function relationshipVocabulary() {
+  return diagramAnalysis.vocabulary;
+}
+
+function diagramSupportsRelationships() {
+  return diagramAnalysis.mode === "relational";
+}
+
 function updateSourceMeta() {
   elements.sourceSize.textContent = `${elements.source.value.length.toLocaleString()} chars`;
+  updateSourceLineHighlight();
+}
+
+function sourceLineForNode(node) {
+  return node?.sourceLine ?? -1;
+}
+
+function updateSourceLineHighlight(line = selectedKey ? sourceLineForNode(graph.nodes.get(selectedKey)) : -1) {
+  if (!elements.sourceLineHighlight) return;
+  if (line < 0) {
+    elements.sourceLineHighlight.classList.remove("visible");
+    return;
+  }
+  const lineHeight = Number.parseFloat(getComputedStyle(elements.source).lineHeight) || 17.05;
+  const lineTop = line * lineHeight;
+  if (lineTop < elements.source.scrollTop || lineTop + lineHeight > elements.source.scrollTop + elements.source.clientHeight) {
+    elements.source.scrollTop = Math.max(0, lineTop - elements.source.clientHeight / 2 + lineHeight / 2);
+  }
+  elements.sourceLineHighlight.style.top = `${lineTop - elements.source.scrollTop}px`;
+  elements.sourceLineHighlight.classList.add("visible");
 }
 
 function updateBlockPicker() {
@@ -238,6 +224,31 @@ function loadSource(value) {
   elements.source.value = blocks[0] || value;
   updateSourceMeta();
   updateBlockPicker();
+  updateSourceLineHighlight(-1);
+}
+
+function populateExamples() {
+  const labels = { relational: "Relationship diagrams", ordered: "Ordered items", canvas: "Canvas charts" };
+  const groups = viewerFixtures.reduce((result, entry) => {
+    const mode = analyzeDiagram(entry.source).mode;
+    (result[mode] ||= []).push(entry);
+    return result;
+  }, {});
+  elements.examplePicker.innerHTML = `<option value="">Examples</option>${Object.entries(groups).map(([mode, fixtures]) => (
+    `<optgroup label="${labels[mode]}">${fixtures.map(({ id }) => `<option value="${id}">${examples[id].label}</option>`).join("")}</optgroup>`
+  )).join("")}`;
+}
+
+function loadExample(key) {
+  const example = examples[key];
+  if (!example) return;
+  markdownBlocks = [];
+  elements.blockPickerWrap.hidden = true;
+  elements.examplePicker.value = key;
+  elements.source.value = example.source;
+  updateSourceMeta();
+  clearSelection();
+  renderDiagram();
 }
 
 function updateSourceFromEditor() {
@@ -264,7 +275,26 @@ function canonical(value) {
 }
 
 function nodeKey(node) {
-  return node.dataset.id || canonical(node.id);
+  if (node.dataset.id) return node.dataset.id;
+  if (node.getAttribute("name")) return node.getAttribute("name");
+  const typedID = node.id.match(/-(?:flowchart|classId|state|entity)-(.+?)-\d+$/)?.[1];
+  if (typedID) return typedID;
+  const serviceID = node.id.match(/-service-(.+)$/)?.[1];
+  if (serviceID) return serviceID;
+  return canonical(node.id.replace(/^atlas-\d+-/, ""));
+}
+
+function renderedNodes(svg) {
+  const selectors = diagramAnalysis.selectors.filter((selector) => svg.querySelector(selector));
+  if (selectors.length) return [...svg.querySelectorAll(selectors.join(", "))];
+  if (diagramAnalysis.mode === "canvas") return [];
+  const textGroups = [...svg.querySelectorAll("text, foreignObject")]
+    .map((element) => element.closest("g"))
+    .filter((element) => element && element.textContent.trim());
+  return [...new Set(textGroups)].map((element) => {
+    element.dataset.atlasSemanticCandidate = "true";
+    return element;
+  });
 }
 
 function indexRenderedGraph() {
@@ -284,26 +314,48 @@ function indexRenderedGraph() {
       };
     })
     .sort((a, b) => a.area - b.area);
+  const gitLabels = elements.source.value.split("\n")
+    .map((line) => line.match(/^\s*commit(?:\s+id:\s*["']([^"']+)["'])?/i)?.[1])
+    .filter(Boolean);
 
-  svg.querySelectorAll("g.node").forEach((node) => {
-    const key = nodeKey(node);
-    const label = (node.querySelector(".nodeLabel")?.textContent || node.textContent || key).trim().replace(/\s+/g, " ");
+  const usedSemanticKeys = new Set();
+  renderedNodes(svg).forEach((node, index) => {
+    const rawKey = nodeKey(node);
+    const fallbackLabel = diagramKind === "gitGraph" && node.matches("circle.commit") ? gitLabels[index] : "";
+    const renderedLabel = (node.querySelector(".nodeLabel")?.textContent || node.textContent || "").trim().replace(/\s+/g, " ");
+    const label = renderedLabel || fallbackLabel || rawKey;
+    const semanticItem = matchSemanticItem(diagramAnalysis, rawKey, label, usedSemanticKeys);
+    if (node.dataset.atlasSemanticCandidate && !semanticItem) return;
+    if (semanticItem) usedSemanticKeys.add(semanticItem.key);
+    const resolvedKey = semanticItem?.key || rawKey || label || `item-${index + 1}`;
     const bounds = node.getBoundingClientRect();
     const centerX = bounds.left + bounds.width / 2;
     const centerY = bounds.top + bounds.height / 2;
     const cluster = clusters.find(({ bounds: clusterBounds }) => centerX >= clusterBounds.left && centerX <= clusterBounds.right
       && centerY >= clusterBounds.top && centerY <= clusterBounds.bottom);
-    node.dataset.graphKey = key;
+    node.dataset.graphKey = resolvedKey;
+    if (semanticItem?.line != null) node.dataset.sourceLine = semanticItem.line;
+    node.classList.add("atlas-node");
     node.setAttribute("tabindex", "0");
     node.setAttribute("role", "button");
     node.setAttribute("aria-label", `${label}. Select to show attached nodes.`);
-    nodes.set(key, { key, label, element: node, groupKey: cluster?.key, groupLabel: cluster?.label });
+    nodes.set(resolvedKey, {
+      key: resolvedKey,
+      rawKey,
+      label: semanticItem?.label || label || resolvedKey,
+      sourceLine: semanticItem?.line,
+      semanticAliases: semanticItem?.aliases || [],
+      element: node,
+      groupKey: cluster?.key,
+      groupLabel: cluster?.label,
+    });
   });
 
   const resolveKey = (candidate) => {
     if (nodes.has(candidate)) return candidate;
     const normalized = canonical(candidate);
-    return [...nodes.keys()].find((key) => canonical(key) === normalized) || candidate;
+    return [...nodes.values()].find((node) => canonical(node.rawKey || "") === normalized
+      || node.semanticAliases.some((alias) => alias.toLocaleLowerCase() === String(candidate).toLocaleLowerCase()))?.key || candidate;
   };
 
   const nodeKeysByLength = [...nodes.keys()].sort((a, b) => b.length - a.length);
@@ -319,7 +371,7 @@ function indexRenderedGraph() {
     return undefined;
   };
 
-  const edges = [];
+  let edges = [];
   svg.querySelectorAll("path.flowchart-link, g.edgePath path").forEach((path) => {
     const classes = [...path.classList];
     const startClass = classes.find((name) => name.startsWith("LS-"));
@@ -343,6 +395,23 @@ function indexRenderedGraph() {
     });
   });
 
+  const semanticRelations = diagramAnalysis.relations
+    .map(({ from, to }) => ({ from: resolveKey(from), to: resolveKey(to) }))
+    .filter(({ from, to }) => nodes.has(from) && nodes.has(to));
+  if (semanticRelations.length) {
+    const usedVisualEdges = new Set();
+    const semanticEdges = semanticRelations.map(({ from, to }) => {
+      const visualEdge = edges.find((edge) => !usedVisualEdges.has(edge)
+        && ((edge.from === from && edge.to === to) || (edge.from === to && edge.to === from)));
+      if (visualEdge) usedVisualEdges.add(visualEdge);
+      return { ...visualEdge, from, to };
+    });
+    const structuralEdges = edges.filter((edge) => !usedVisualEdges.has(edge)
+      && (nodes.get(edge.from)?.sourceLine == null || nodes.get(edge.to)?.sourceLine == null));
+    edges = [...semanticEdges, ...structuralEdges];
+  }
+  edges = edges.filter((edge, index) => edges.findIndex((candidate) => candidate.from === edge.from && candidate.to === edge.to) === index);
+
   const incoming = new Map([...nodes.keys()].map((key) => [key, new Set()]));
   const outgoing = new Map([...nodes.keys()].map((key) => [key, new Set()]));
   edges.forEach(({ from, to }) => {
@@ -355,7 +424,9 @@ function indexRenderedGraph() {
   });
 
   graph = { nodes, edges, incoming, outgoing, markerCache: new Map() };
-  elements.stats.textContent = `${nodes.size.toLocaleString()} nodes · ${edges.length.toLocaleString()} edges`;
+  elements.stats.textContent = nodes.size
+    ? `${nodes.size.toLocaleString()} items · ${edges.length.toLocaleString()} relations`
+    : `${diagramKind} · canvas view`;
   renderNodeList();
 
   nodes.forEach(({ element }, key) => {
@@ -382,7 +453,11 @@ function renderNodeList() {
 
   if (!matches.length) {
     elements.nodeList.className = "node-list empty-state";
-    elements.nodeList.textContent = graph.nodes.size ? "No nodes match that search." : "Render a diagram to build its index.";
+    elements.nodeList.textContent = graph.nodes.size
+      ? "No items match that search."
+      : diagramAnalysis.mode === "canvas"
+        ? "This chart has no parent/child relationships. Use the canvas controls to explore it."
+        : "Render a diagram to build its index.";
     return;
   }
 
@@ -469,16 +544,16 @@ function markerForRole(reference, role) {
 }
 
 function setEdgeRole(edge, role) {
-  edge.path.classList.toggle("atlas-incoming", role === "incoming");
-  edge.path.classList.toggle("atlas-outgoing", role === "outgoing");
-  edge.path.classList.toggle("atlas-dimmed", !role);
+  edge.path?.classList.toggle("atlas-incoming", role === "incoming");
+  edge.path?.classList.toggle("atlas-outgoing", role === "outgoing");
+  edge.path?.classList.toggle("atlas-dimmed", !role);
   edge.label?.classList.toggle("atlas-incoming", role === "incoming");
   edge.label?.classList.toggle("atlas-outgoing", role === "outgoing");
   edge.label?.classList.toggle("atlas-dimmed", !role);
-  if (edge.originalMarkerStart) {
+  if (edge.path && edge.originalMarkerStart) {
     edge.path.setAttribute("marker-start", role ? markerForRole(edge.originalMarkerStart, role) : edge.originalMarkerStart);
   }
-  if (edge.originalMarkerEnd) {
+  if (edge.path && edge.originalMarkerEnd) {
     edge.path.setAttribute("marker-end", role ? markerForRole(edge.originalMarkerEnd, role) : edge.originalMarkerEnd);
   }
 }
@@ -519,6 +594,16 @@ function selectNode(key) {
   });
 
   const attachedCount = new Set([...parents, ...children]).size;
+  const vocabulary = relationshipVocabulary();
+  const relationships = diagramSupportsRelationships() ? `
+    <section class="relationship-group incoming">
+      <h3><i></i>${vocabulary.incoming} <span>${parents.size}</span></h3>
+      <div class="neighbor-list">${relationshipRows(parents, "incoming")}</div>
+    </section>
+    <section class="relationship-group outgoing">
+      <h3><i></i>${vocabulary.outgoing} <span>${children.size}</span></h3>
+      <div class="neighbor-list">${relationshipRows(children, "outgoing")}</div>
+    </section>` : `<p class="hint relationship-note">This diagram is ordered visually, but does not define parent/child relationships. Select items to inspect their source and use Z to center them.</p>`;
 
   elements.selection.className = "selection-content";
   elements.selection.innerHTML = `
@@ -526,16 +611,10 @@ function selectNode(key) {
       <div class="selected-node-name">${escapeHTML(selected.label)}</div>
       <button type="button" data-zoom-key="${escapeAttribute(key)}" class="zoom-here-button">Zoom here</button>
     </div>
-    <div class="connection-count">${attachedCount} directly attached ${attachedCount === 1 ? "node" : "nodes"}</div>
-    <section class="relationship-group incoming">
-      <h3><i></i>Parents <span>${parents.size}</span></h3>
-      <div class="neighbor-list">${relationshipRows(parents, "incoming")}</div>
-    </section>
-    <section class="relationship-group outgoing">
-      <h3><i></i>Children <span>${children.size}</span></h3>
-      <div class="neighbor-list">${relationshipRows(children, "outgoing")}</div>
-    </section>`;
+    <div class="connection-count">${diagramSupportsRelationships() ? `${attachedCount} directly attached ${attachedCount === 1 ? "item" : "items"}` : "Source-linked item"}</div>
+    ${relationships}`;
   elements.clearSelection.disabled = false;
+  updateSourceLineHighlight();
   renderNodeList();
 }
 
@@ -549,6 +628,7 @@ function clearSelection() {
   elements.selection.className = "empty-state";
   elements.selection.textContent = "Select any node to isolate its immediate connections.";
   elements.clearSelection.disabled = true;
+  updateSourceLineHighlight(-1);
   renderNodeList();
 }
 
@@ -650,7 +730,7 @@ function showKeyboardPreview() {
   const previewEdge = graph.edges.find((edge) => keyboardNavigation.relationship === "parent"
     ? edge.from === key && edge.to === selectedKey
     : edge.from === selectedKey && edge.to === key);
-  previewEdge?.path.classList.add("atlas-preview");
+  previewEdge?.path?.classList.add("atlas-preview");
   previewEdge?.label?.classList.add("atlas-preview");
   const row = elements.selection.querySelector(`.relationship-row [data-node-key="${CSS.escape(key)}"]`)?.closest(".relationship-row");
   row?.classList.add("keyboard-preview");
@@ -711,14 +791,16 @@ async function renderDiagram(preserveView = false) {
   }
 
   const sequence = ++renderSequence;
+  diagramAnalysis = analyzeDiagram(source);
+  diagramKind = diagramAnalysis.id;
   elements.render.disabled = true;
   elements.render.textContent = "Rendering…";
   setStatus("Laying out diagram…", "working");
   clearSelection();
 
   try {
-    await mermaid.parse(source);
-    const { svg, bindFunctions } = await mermaid.render(`atlas-${sequence}`, source);
+    await parseMermaid(source);
+    const { svg, bindFunctions } = await renderMermaid(`atlas-${sequence}`, source);
     if (sequence !== renderSequence) return;
     elements.stage.innerHTML = svg;
     bindFunctions?.(elements.stage);
@@ -758,7 +840,7 @@ let drag = null;
 let suppressCanvasClick = false;
 elements.viewport.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) return;
-  if (event.target.closest("g.node")) return;
+  if (event.target.closest("[data-graph-key]")) return;
   drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: transform.x, originY: transform.y, moved: false };
   elements.viewport.setPointerCapture(event.pointerId);
   elements.viewport.classList.add("dragging");
@@ -834,7 +916,9 @@ elements.viewport.addEventListener("click", (event) => {
 
 elements.source.addEventListener("input", () => {
   updateSourceFromEditor();
+  elements.examplePicker.value = "";
 });
+elements.source.addEventListener("scroll", () => updateSourceLineHighlight());
 elements.source.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") renderDiagram();
 });
@@ -850,6 +934,7 @@ elements.file.addEventListener("change", async () => {
   loadSource(await file.text());
   await renderDiagram();
 });
+elements.examplePicker.addEventListener("change", () => loadExample(elements.examplePicker.value));
 elements.search.addEventListener("input", renderNodeList);
 elements.groupIndex.addEventListener("click", () => {
   indexSettings = { ...indexSettings, grouped: !indexSettings.grouped };
@@ -1005,6 +1090,7 @@ window.addEventListener("keydown", (event) => {
 });
 
 loadSource(sample);
+populateExamples();
 updateSensitivityControls();
 updateIndexControls();
 applyPanelSizes();

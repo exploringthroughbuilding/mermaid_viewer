@@ -1,7 +1,55 @@
 import puppeteer from "puppeteer-core";
 import { createServer } from "vite";
+import { analyzeDiagram } from "../src/mermaid/diagram-adapters.js";
+import { diagramFixtures, viewerFixtures } from "../src/fixtures/diagram-fixtures.js";
 
-const sourcePath = process.argv[2] || "/Users/bhavya/Documents/macos-agent/docs/sonny-codebase-mermaid-diagrams.md";
+const adapterFixtures = {
+  "flowchart LR": "flowchart",
+  "flowchart-elk LR": "flowchart",
+  "block-beta": "block",
+  sequenceDiagram: "sequence",
+  zenuml: "zenuml",
+  classDiagram: "class",
+  "stateDiagram-v2": "state",
+  erDiagram: "er",
+  "architecture-beta": "architecture",
+  "swimlane-beta": "swimlane",
+  requirementDiagram: "requirement",
+  "sankey-beta": "sankey",
+  mindmap: "mindmap",
+  "treeView-beta": "treeView",
+  "treemap-beta": "treemap",
+  "ishikawa-beta": "ishikawa",
+  "wardley-beta": "wardley",
+  gantt: "gantt",
+  kanban: "kanban",
+  eventModeling: "eventmodeling",
+  timeline: "timeline",
+  gitGraph: "gitGraph",
+  journey: "journey",
+  "packet-beta": "packet",
+  railroad: "railroad",
+  ebnf: "railroad",
+  abnf: "railroad",
+  peg: "railroad",
+  pie: "pie",
+  quadrantChart: "quadrantChart",
+  "xychart-beta": "xychart",
+  "radar-beta": "radar",
+  "venn-beta": "venn",
+  "cynefin-beta": "cynefin",
+  C4Context: "c4",
+  info: "info",
+};
+const adapterCoverage = Object.entries(adapterFixtures).map(([declaration, expected]) => ({
+  declaration,
+  expected,
+  actual: analyzeDiagram(declaration).id,
+}));
+const missingAdapters = adapterCoverage.filter(({ expected, actual }) => expected !== actual);
+if (missingAdapters.length) throw new Error(`Diagram adapter coverage failed: ${JSON.stringify(missingAdapters)}`);
+
+const fixturePath = process.argv[2] || new URL("../tests/fixtures/large-flowchart.mmd", import.meta.url).pathname;
 const chromePath = process.env.CHROME_PATH
   || "/Users/bhavya/.cache/puppeteer/chrome/mac_arm-147.0.7727.57/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing";
 
@@ -37,6 +85,58 @@ try {
   }));
   if (panelSizing.selectionHeight <= panelSizing.indexHeight) {
     throw new Error(`Selection panel did not receive the larger share: ${JSON.stringify(panelSizing)}`);
+  }
+
+  const exampleKeys = await page.$$eval("#example-picker option", (options) => options.map((option) => option.value).filter(Boolean));
+  const relationshipExamples = new Set(viewerFixtures.filter(({ source }) => analyzeDiagram(source).mode === "relational").map(({ id }) => id));
+  const orderedExamples = new Set(viewerFixtures.filter(({ source }) => analyzeDiagram(source).mode === "ordered").map(({ id }) => id));
+  const exampleResults = [];
+  for (const key of exampleKeys) {
+    await page.select("#example-picker", key);
+    await page.waitForFunction(() => ["Diagram ready", "Render failed"].includes(document.querySelector("#status")?.textContent));
+    const result = await page.evaluate(() => ({
+      status: document.querySelector("#status")?.textContent,
+      nodes: document.querySelectorAll("#stage g.node").length,
+      indexedItems: document.querySelectorAll("#node-list [data-node-key]").length,
+      stats: document.querySelector("#graph-stats")?.textContent,
+      source: document.querySelector("#source")?.value.split("\n")[0],
+    }));
+    if (result.status !== "Diagram ready") {
+      const detail = await page.$eval("#canvas-empty", (element) => element.textContent.trim());
+      throw new Error(`Example ${key} failed to render: ${JSON.stringify(result)} ${detail}\n${browserErrors.join("\n")}`);
+    }
+    let interaction;
+    if (relationshipExamples.has(key)) {
+      const selected = await page.evaluate(() => {
+        const button = [...document.querySelectorAll("#node-list .node-index-item")]
+          .find((item) => Number(item.querySelector("small")?.textContent) > 0);
+        button?.click();
+        return button?.dataset.nodeKey;
+      });
+      interaction = await page.evaluate(() => ({
+        selected: document.querySelector("#stage .atlas-node.atlas-selected")?.dataset.graphKey,
+        relationships: document.querySelectorAll("#selection-content .relationship-row [data-node-key]").length,
+        sourceHighlighted: document.querySelector("#source-line-highlight")?.classList.contains("visible"),
+      }));
+      if (!selected || interaction.selected !== selected || !interaction.relationships || !interaction.sourceHighlighted) {
+        throw new Error(`Example ${key} did not provide relationship navigation and source highlighting: ${JSON.stringify(interaction)}`);
+      }
+    } else if (orderedExamples.has(key)) {
+      await page.$eval("#node-list .node-index-item", (button) => button.click());
+      interaction = await page.evaluate(() => ({
+        selected: Boolean(document.querySelector("#stage .atlas-node.atlas-selected")),
+        selectedKey: document.querySelector("#stage .atlas-node.atlas-selected")?.dataset.graphKey,
+        selectedSourceLine: document.querySelector("#stage .atlas-node.atlas-selected")?.dataset.sourceLine,
+        note: document.querySelector("#selection-content .relationship-note")?.textContent,
+        sourceHighlighted: document.querySelector("#source-line-highlight")?.classList.contains("visible"),
+      }));
+      if (!interaction.selected || !interaction.note || !interaction.sourceHighlighted) {
+        throw new Error(`Example ${key} did not provide ordered-item inspection: ${JSON.stringify(interaction)}`);
+      }
+    } else if (result.indexedItems) {
+      throw new Error(`Chart example ${key} unexpectedly exposed graph relationships: ${JSON.stringify(result)}`);
+    }
+    exampleResults.push({ key, ...result, interaction });
   }
 
   const sourceResizerBounds = await page.$eval('.panel-resizer[data-resize="source"]', (resizer) => {
@@ -108,6 +208,14 @@ E[Client] --> A`;
     throw new Error(`Grouped fixture render failed: ${detail}\n${browserErrors.join("\n")}`);
   }
   await page.click('#stage g.node[data-graph-key="B"]');
+  const highlightedSource = await page.evaluate(() => ({
+    visible: document.querySelector("#source-line-highlight")?.classList.contains("visible"),
+    top: document.querySelector("#source-line-highlight")?.style.top,
+    sourceLine: document.querySelector("#source")?.value.split("\n").find((line) => line.includes("A[API]")),
+  }));
+  if (!highlightedSource.visible || !highlightedSource.top || !highlightedSource.sourceLine) {
+    throw new Error(`Selecting a node did not highlight its source line: ${JSON.stringify(highlightedSource)}`);
+  }
   const activeEdgeLabel = await page.evaluate(() => {
     const label = [...document.querySelectorAll("#stage g.edgeLabel")]
       .find((element) => element.textContent.includes("cache write"));
@@ -204,7 +312,7 @@ E[Client] --> A`;
   await page.select("#index-sort", "label-asc");
 
   const fileInput = await page.$("#file-input");
-  await fileInput.uploadFile(sourcePath);
+  await fileInput.uploadFile(fixturePath);
   await page.waitForFunction(() => (
     document.querySelectorAll("#block-picker option").length > 1
     && document.querySelector("#status")?.textContent === "Diagram ready"
@@ -508,7 +616,27 @@ E[Client] --> A`;
   const panDistance = translationAfterDrag.x - translationBeforeDrag.x;
   if (Math.abs(panDistance - 60) > 2) throw new Error(`Pan sensitivity was not applied: distance ${panDistance}`);
 
-  console.log(JSON.stringify({ sourcePath, panelSizing, resizedPanels, resizedSidebar, savedSensitivity, indexControls, collapsedGroup, expandedGroup, sourceLayout, rendered, selectionVerified: true, keyboardNavigation, selectionPreservedAfterDrag, indexZoomVerified, zoomCenter, zoomRatio, nativePinchRatio, trackpadMovement, panDistance }, null, 2));
+  const debugPage = await browser.newPage();
+  await debugPage.setViewport({ width: 1440, height: 900 });
+  debugPage.setDefaultTimeout(180_000);
+  await debugPage.goto("http://127.0.0.1:4174/debug", { waitUntil: "networkidle0" });
+  await debugPage.waitForFunction((expected) => {
+    const cards = [...document.querySelectorAll("[data-fixture-id]")];
+    return cards.length === expected && cards.every((card) => ["passed", "failed"].includes(card.dataset.renderStatus));
+  }, {}, diagramFixtures.length);
+  const debugResults = await debugPage.evaluate(() => ({
+    total: document.querySelectorAll("[data-fixture-id]").length,
+    passed: document.querySelectorAll('[data-render-status="passed"]').length,
+    scrollable: document.documentElement.scrollHeight > window.innerHeight && getComputedStyle(document.body).overflowY !== "hidden",
+    failed: [...document.querySelectorAll('[data-render-status="failed"]')].map((card) => ({
+      id: card.dataset.fixtureId,
+      error: card.querySelector(".render-error")?.textContent,
+    })),
+  }));
+  if (debugResults.failed.length) throw new Error(`Debug syntax fixtures failed: ${JSON.stringify(debugResults.failed, null, 2)}`);
+  if (!debugResults.scrollable) throw new Error(`Debug syntax gallery is not scrollable: ${JSON.stringify(debugResults)}`);
+
+  console.log(JSON.stringify({ fixturePath, adapterCoverage: `${adapterCoverage.length} declarations`, debugResults, panelSizing, exampleResults, highlightedSource, resizedPanels, resizedSidebar, savedSensitivity, indexControls, collapsedGroup, expandedGroup, sourceLayout, rendered, selectionVerified: true, keyboardNavigation, selectionPreservedAfterDrag, indexZoomVerified, zoomCenter, zoomRatio, nativePinchRatio, trackpadMovement, panDistance }, null, 2));
 } finally {
   await browser?.close();
   await server.close();

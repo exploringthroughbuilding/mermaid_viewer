@@ -92,12 +92,15 @@ function updateSourceMeta() {
   updateSourceLineHighlight();
 }
 
+let sourceLineHeight = 0;
+
 function updateSourceLineHighlight(line = selectedKey ? graph.nodes.get(selectedKey)?.sourceLine ?? -1 : -1) {
   if (line == null || line < 0) {
     elements.sourceLineHighlight.classList.remove("visible");
     return;
   }
-  const lineHeight = Number.parseFloat(getComputedStyle(elements.source).lineHeight) || 17.05;
+  sourceLineHeight ||= Number.parseFloat(getComputedStyle(elements.source).lineHeight) || 17.05;
+  const lineHeight = sourceLineHeight;
   const lineTop = line * lineHeight;
   if (lineTop < elements.source.scrollTop || lineTop + lineHeight > elements.source.scrollTop + elements.source.clientHeight) {
     elements.source.scrollTop = Math.max(0, lineTop - elements.source.clientHeight / 2 + lineHeight / 2);
@@ -304,7 +307,7 @@ function zoomSelectedNode() {
 
 function indexRenderedGraph(svg) {
   graph = buildGraph({ svg, analysis: diagramAnalysis, scale: viewport.state.scale });
-  elements.stage.classList.toggle("atlas-large", graph.nodes.size > 1500);
+  elements.stage.classList.toggle("atlas-small", graph.nodes.size + graph.edges.length <= 400);
   elements.stats.textContent = graph.nodes.size
     ? `${graph.nodes.size.toLocaleString()} items · ${graph.edges.length.toLocaleString()} relations`
     : `${diagramAnalysis.id} · canvas view`;
@@ -325,7 +328,10 @@ async function renderDiagram(preserveView = false) {
   diagramAnalysis = analyzeDiagram(source);
   elements.render.disabled = true;
   elements.render.textContent = "Rendering…";
-  setStatus("Laying out diagram…", "working");
+  const size = diagramAnalysis.items.length + diagramAnalysis.relations.length;
+  setStatus(size > 600
+    ? `Laying out ${diagramAnalysis.items.length.toLocaleString()} items · ${diagramAnalysis.relations.length.toLocaleString()} relations… large layouts can take a while`
+    : "Laying out diagram…", "working");
   clearSelection();
 
   try {
@@ -344,18 +350,14 @@ async function renderDiagram(preserveView = false) {
     renderedSVG.style.width = `${viewBox.width}px`;
     renderedSVG.style.height = `${viewBox.height}px`;
     elements.canvasEmpty.hidden = true;
+    // Fit before the first paint so the SVG is never rasterised at a stale zoom level.
+    if (shouldPreserveView) viewport.apply();
+    else viewport.fit();
     setStatus("Indexing graph…", "working");
     await nextPaint();
     if (sequence !== renderSequence) return;
     indexRenderedGraph(renderedSVG);
     if (selectionToRestore) selectNode(selectionToRestore);
-    if (shouldPreserveView) viewport.apply();
-    else {
-      const revisionBeforeFit = viewport.revision;
-      requestAnimationFrame(() => {
-        if (sequence === renderSequence && selectedKey === null && viewport.revision === revisionBeforeFit) viewport.fit();
-      });
-    }
     setStatus("Diagram ready", "ready");
   } catch (error) {
     if (sequence !== renderSequence) return;

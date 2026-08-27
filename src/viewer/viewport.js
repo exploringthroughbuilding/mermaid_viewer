@@ -8,16 +8,46 @@ export function createViewport({ viewport, stage, zoomOutput, getSensitivity }) 
   const state = { x: 0, y: 0, scale: 1 };
   let revision = 0;
   let animationTimer;
+  let transitioning = false;
+  let promoted = false;
+  let demoteTimer;
 
   const reducedMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
+  // The stage is promoted to its own compositor layer only while the view is
+  // moving. A permanent `will-change: transform` locks Chrome's raster scale at
+  // whatever zoom the SVG was first painted at; after fitting a large diagram
+  // that meant every later repaint rasterised a gigantic layer (seconds per
+  // selection). Demoting when idle re-rasters once at the real scale instead.
+  const demote = () => {
+    promoted = false;
+    stage.style.willChange = "auto";
+  };
+  const promote = () => {
+    if (!promoted) {
+      promoted = true;
+      stage.style.willChange = "transform";
+    }
+    window.clearTimeout(demoteTimer);
+    demoteTimer = window.setTimeout(demote, 320);
+  };
+
+  // Only touch `transition` when it actually changes: rewriting it on every
+  // pointer move would invalidate style on the (huge) stage subtree each frame.
+  const setTransitioning = (next) => {
+    if (transitioning === next) return;
+    transitioning = next;
+    stage.style.transition = next ? "transform 260ms cubic-bezier(.2, .7, .2, 1)" : "none";
+  };
 
   const apply = (animated = false) => {
     revision += 1;
     window.clearTimeout(animationTimer);
+    promote();
     if (animated && !reducedMotion()) {
-      stage.style.transition = "transform 260ms cubic-bezier(.2, .7, .2, 1)";
-      animationTimer = window.setTimeout(() => { stage.style.transition = "none"; }, 300);
-    } else stage.style.transition = "none";
+      setTransitioning(true);
+      animationTimer = window.setTimeout(() => setTransitioning(false), 300);
+    } else setTransitioning(false);
     stage.style.transform = `translate(${state.x}px, ${state.y}px) scale(${state.scale})`;
     zoomOutput.value = `${Math.round(state.scale * 100)}%`;
     zoomOutput.textContent = zoomOutput.value;

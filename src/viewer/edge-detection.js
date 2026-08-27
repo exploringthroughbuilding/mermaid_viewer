@@ -141,8 +141,12 @@ export function detectEdges(svg, analysis, nodes, scale = 1) {
   const strategy = labelStrategies[kind] || "dataId";
   const lookup = labelLookup(svg, strategy);
 
+  // Stroke widths are read here, in one batch, so highlighting never has to
+  // query computed styles between DOM writes (which forces a style recalc each time).
+  const strokeWidths = elements.map((element) => Number.parseFloat(getComputedStyle(element).strokeWidth) || 1);
+
   const edges = [];
-  elements.forEach((element) => {
+  elements.forEach((element, position) => {
     const attributes = element.dataset.from && element.dataset.to
       ? { from: resolve(element.dataset.from), to: resolve(element.dataset.to) }
       : undefined;
@@ -154,6 +158,7 @@ export function detectEdges(svg, analysis, nodes, scale = 1) {
       from: endpoints.from,
       to: endpoints.to,
       element,
+      strokeWidth: strokeWidths[position],
       label: labelFor(element, strategy, lookup, scale),
       markerStart: element.getAttribute("marker-start"),
       markerEnd: element.getAttribute("marker-end"),

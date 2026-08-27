@@ -70,17 +70,19 @@ export function createHighlighter({ stage, colorRoot }) {
   };
 
   // Markers scale with stroke width, so a highlighted edge only grows relative
-  // to its own width; a fixed 4px would turn ER crow's feet into blobs.
-  const emphasizeStroke = (element) => {
+  // to its own width; a fixed 4px would turn ER crow's feet into blobs. Widths
+  // were captured when the graph was built, so this never reads computed style.
+  const emphasizeStroke = (element, original = 1) => {
     if (element.closest("g.link")) return; // sankey ribbons are stroked to their flow width
-    const original = Number.parseFloat(getComputedStyle(element).strokeWidth) || 1;
     element.style.setProperty("stroke-width", `${Math.min(4, Math.max(2.25, original * 1.6))}px`, "important");
   };
 
+  let litEdges = new Set();
   const setEdgeRole = (graph, edge, role) => {
-    edge.elements.forEach((element) => {
+    litEdges.add(edge);
+    edge.elements.forEach((element, position) => {
       light(element, role);
-      emphasizeStroke(element);
+      emphasizeStroke(element, edge.strokeWidths?.[position]);
     });
     edge.labels.forEach((label) => light(label, role));
     edge.markers.forEach(({ element, start, end }) => {
@@ -108,7 +110,8 @@ export function createHighlighter({ stage, colorRoot }) {
       });
       litElements = new Set();
       previewElements = new Set();
-      graph?.edges.forEach(restoreMarkers);
+      litEdges.forEach(restoreMarkers);
+      litEdges = new Set();
       stage.querySelector("svg")?.classList.remove("atlas-has-selection");
     },
     // Lights the node, its neighbours and the connecting edges.
@@ -149,7 +152,7 @@ export function createHighlighter({ stage, colorRoot }) {
           previewElements.add(element);
           litElements.add(element);
         });
-        edge.elements.forEach(emphasizeStroke);
+        edge.elements.forEach((element, position) => emphasizeStroke(element, edge.strokeWidths?.[position]));
       }
     },
     clearPreview() {

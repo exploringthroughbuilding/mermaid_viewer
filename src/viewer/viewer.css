@@ -246,7 +246,8 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .viewport { position: relative; min-width: 0; min-height: 0; overflow: hidden; cursor: grab; touch-action: none; outline: none; background: #f7f8fa; contain: layout paint style; }
 .viewport.dragging { cursor: grabbing; }
 .grid-plane { position: absolute; inset: 0; background-image: linear-gradient(#d9dee6 1px, transparent 1px), linear-gradient(90deg, #d9dee6 1px, transparent 1px), linear-gradient(#e9edf2 1px, transparent 1px), linear-gradient(90deg, #e9edf2 1px, transparent 1px); background-size: 80px 80px, 80px 80px, 16px 16px, 16px 16px; opacity: .72; }
-.stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; user-select: none; }
+/* No permanent will-change here: viewport.js promotes the stage only while it moves (see the note there). */
+.stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; user-select: none; }
 /* No drop-shadow filter here: a filter forces the whole SVG through an offscreen surface on every pan/zoom frame. */
 .stage svg { display: block; max-width: none !important; overflow: visible; }
 .canvas-empty { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; text-align: center; color: #657389; pointer-events: none; }
@@ -267,7 +268,8 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
    shapes receive strokes, so icons inside a node are never outlined; nodes
    without a visible shape get a synthetic outline box instead. */
 .stage .atlas-node { cursor: pointer; }
-.stage:not(.atlas-large) :is(.atlas-node, .atlas-edge, .atlas-edge-label, .atlas-companion) { transition: opacity 120ms ease; }
+/* Opacity fades are only enabled on small graphs: animating thousands of elements repaints the whole SVG every frame. */
+.stage.atlas-small :is(.atlas-node, .atlas-edge, .atlas-edge-label, .atlas-companion) { transition: opacity 120ms ease; }
 .stage .atlas-node[tabindex="0"]:focus { outline: none; }
 .stage .atlas-synthetic { fill: none !important; stroke: none; }
 .stage .atlas-node:hover .atlas-outline,

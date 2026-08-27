@@ -1,12 +1,35 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+
+const themeStorageKey = "mermaid-atlas-theme:v1";
+
+function loadTheme() {
+  try {
+    return localStorage.getItem(themeStorageKey) === "dark" ? "dark" : "light";
+  } catch {
+    return "light";
+  }
+}
 
 export default function App() {
+  const [theme, setTheme] = useState(loadTheme);
+
   useEffect(() => {
     void import("./controller.js");
   }, []);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(themeStorageKey, theme);
+    } catch {
+      // The selected theme still applies when browser storage is unavailable.
+    }
+    window.dispatchEvent(new CustomEvent("atlas-theme-change", { detail: { theme } }));
+  }, [theme]);
+
+  const isDark = theme === "dark";
+
   return (
-    <>
+    <div className="app-root" data-theme={theme}>
       <main className="workbench">
         <aside className="rail" aria-label="Diagram controls">
           <header className="brand">
@@ -42,11 +65,24 @@ export default function App() {
               <h2 id="index-title">Graph index</h2>
               <span id="graph-stats">Not rendered</span>
             </div>
-            <label className="search">
-              <span aria-hidden="true">⌕</span>
-              <input id="node-search" type="search" placeholder="Find a node" autoComplete="off" />
-              <kbd>/</kbd>
-            </label>
+            <div className="index-tools">
+              <label className="search">
+                <span aria-hidden="true">⌕</span>
+                <input id="node-search" type="search" placeholder="Find a node" autoComplete="off" />
+                <kbd>/</kbd>
+              </label>
+              <button id="group-index" className="index-mode" type="button" aria-pressed="false" aria-label="Group nodes by Mermaid subgraph" title="Group nodes by Mermaid subgraph">
+                <span aria-hidden="true"><i /><i /></span>
+              </button>
+              <label className="index-sort-control" htmlFor="index-sort">
+                <select id="index-sort" defaultValue="label-asc" aria-label="Sort graph index">
+                  <option value="label-asc">Name A–Z</option>
+                  <option value="label-desc">Name Z–A</option>
+                  <option value="connections-desc">Most connected</option>
+                  <option value="connections-asc">Least connected</option>
+                </select>
+              </label>
+            </div>
             <div id="node-list" className="node-list empty-state">Render a diagram to build its index.</div>
           </section>
 
@@ -76,6 +112,16 @@ export default function App() {
               <button id="fit" type="button">Fit graph</button>
               <button id="actual-size" type="button">100%</button>
               <button id="open-settings" type="button" title="Interaction settings" aria-label="Open interaction settings">Controls</button>
+              <button
+                className="theme-toggle"
+                type="button"
+                aria-label={`Switch to ${isDark ? "light" : "dark"} mode`}
+                aria-pressed={isDark}
+                onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}
+              >
+                <span className="theme-toggle-track" aria-hidden="true"><i /></span>
+                <span className="theme-toggle-label">{isDark ? "Light" : "Dark"}</span>
+              </button>
             </div>
           </header>
           <div id="viewport" className="viewport" tabIndex="0">
@@ -89,7 +135,7 @@ export default function App() {
           </div>
           <footer className="canvas-footer">
             <span>ELK layout</span>
-            <span>20,000 edge allowance</span>
+            <span>←→ relation · ↑↓ browse · S select · Z zoom</span>
             <span>Rendered on this device</span>
           </footer>
         </section>
@@ -136,6 +182,6 @@ export default function App() {
           </footer>
         </form>
       </dialog>
-    </>
+    </div>
   );
 }

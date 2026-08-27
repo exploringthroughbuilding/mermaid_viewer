@@ -1,0 +1,56 @@
+# Application test diagrams
+
+```mermaid
+flowchart LR
+  subgraph Input
+    N01[Source] --> N02[Tokenize]
+    N02 --> N03[Parse]
+    N03 --> N04[Analyze]
+  end
+  subgraph Semantics
+    N04 --> N05[Items]
+    N04 --> N06[Relations]
+    N04 --> N07[Source lines]
+    N05 --> N08[Bind nodes]
+    N06 --> N09[Bind edges]
+    N07 --> N10[Highlight]
+  end
+  subgraph Layouts
+    N08 --> N11[ELK layered]
+    N08 --> N12[ELK force]
+    N08 --> N13[Tidy tree]
+    N09 --> N14[Default SVG]
+  end
+  subgraph Interaction
+    N10 --> N15[Selection]
+    N15 --> N16[Navigation]
+    N16 --> N17[Preview]
+    N17 --> N18[Commit]
+    N11 --> N19[Pan]
+    N12 --> N20[Zoom]
+    N13 --> N21[Fit]
+    N14 --> N22[Edge labels]
+  end
+  N18 --> N23[Graph index]
+  N19 --> N24[Viewport]
+  N20 --> N24
+  N21 --> N24
+  N22 --> N25[Inspector]
+  N23 --> N25
+  N24 --> N26[Ready]
+  N25 --> N26
+```
+
+```mermaid
+flowchart LR
+  Main[Application] --> AppDelegate[App delegate]
+  AppDelegate --> EmergencyHotKey[Emergency hot key]
+  AppDelegate --> ViewModel[View model]
+  AppDelegate --> MenuController[Menu controller]
+  EmergencyHotKey --> CommandRouter[Command router]
+  ViewModel --> Store[State store]
+  MenuController --> CommandRouter
+  CommandRouter --> Worker[Background worker]
+  Worker --> Store
+  Store --> Renderer[Renderer]
+```

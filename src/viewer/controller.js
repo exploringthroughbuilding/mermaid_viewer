@@ -218,9 +218,18 @@ function contrastRatio(first, second) {
 }
 
 function labelBackground(label, svg) {
+  const labelBounds = label.getBoundingClientRect();
+  const centerX = labelBounds.left + labelBounds.width / 2;
+  const centerY = labelBounds.top + labelBounds.height / 2;
   for (let container = label.parentElement; container && container !== svg; container = container.parentElement) {
     if (container.classList.contains("label")) continue;
-    const shape = [...container.children].find((child) => child.matches?.("rect, circle, ellipse, path, polygon"));
+    const shape = [...container.children].find((child) => {
+      if (!child.matches?.("rect, circle, ellipse, path, polygon")) return false;
+      const bounds = child.getBoundingClientRect();
+      return bounds.width > 0 && bounds.height > 0
+        && centerX >= bounds.left && centerX <= bounds.right
+        && centerY >= bounds.top && centerY <= bounds.bottom;
+    });
     const color = opaqueColor(shape && rgbColor(getComputedStyle(shape).fill));
     if (color) return color;
   }
@@ -362,6 +371,11 @@ function interactionParts(parts) {
   return [...new Set(parts.filter((part) => part?.classList))];
 }
 
+function topLevelParts(parts) {
+  const unique = interactionParts(parts);
+  return unique.filter((part) => !unique.some((candidate) => candidate !== part && candidate.contains?.(part)));
+}
+
 function nodeParts(node) {
   return interactionParts([node.element, ...node.paintParts]);
 }
@@ -376,8 +390,9 @@ function setNodeRole(node, role) {
     part.classList.toggle("atlas-parent", role === "parent");
     part.classList.toggle("atlas-child", role === "child");
     part.classList.toggle("atlas-bidirectional", role === "bidirectional");
-    part.classList.toggle("atlas-dimmed", role === "dimmed");
+    part.classList.remove("atlas-dimmed");
   });
+  node.element?.classList.toggle("atlas-dimmed", role === "dimmed");
 }
 
 function setNodePreview(node, preview) {
@@ -386,6 +401,8 @@ function setNodePreview(node, preview) {
 
 function setEdgePreview(edge, preview) {
   edgeParts(edge).forEach((part) => part.classList.toggle("atlas-preview", preview));
+  edge.preview = preview;
+  applyEdgeMarkers(edge);
 }
 
 function indexDiagramInteraction() {
@@ -439,7 +456,10 @@ function indexDiagramInteraction() {
       const pathParts = interactionParts(edge.pathParts);
       const arrowParts = interactionParts(edge.arrowParts);
       const labelParts = interactionParts(edge.labelParts.flatMap((part) => [part, part.closest?.("g.edgeLabel")]));
-      pathParts.forEach((part) => part.classList.add("atlas-edge-part"));
+      pathParts.forEach((part) => {
+        part.classList.add("atlas-edge-part");
+        part.style.setProperty("--atlas-original-stroke-width", getComputedStyle(part).strokeWidth);
+      });
       arrowParts.forEach((part) => part.classList.add("atlas-edge-part"));
       labelParts.forEach((part) => part.classList.add("atlas-edge-label"));
       return {
@@ -574,35 +594,62 @@ function markerForRole(reference, role) {
   const source = elements.stage.querySelector(`#${CSS.escape(sourceID)}`);
   if (!source) return reference;
   const clone = source.cloneNode(true);
-  const roleColor = role === "incoming" ? "#7655b5" : "#25866a";
+  const roleColor = {
+    incoming: "#7655b5",
+    outgoing: "#25866a",
+    preview: "#c6872d",
+    walkthrough: getComputedStyle(elements.stage.closest(".app-root") || document.documentElement).getPropertyValue("--coral").trim() || "#e36f55",
+  }[role];
   const cloneID = `${sourceID}-atlas-${role}`;
   clone.id = cloneID;
   clone.style.color = roleColor;
-  clone.querySelectorAll("path, polygon, polyline").forEach((shape) => {
-    shape.setAttribute("fill", roleColor);
-    shape.setAttribute("stroke", roleColor);
-    shape.style.setProperty("fill", roleColor, "important");
-    shape.style.setProperty("stroke", roleColor, "important");
+  const sourceShapes = source.querySelectorAll("circle, ellipse, line, path, polygon, polyline, rect");
+  const hollowMarker = /(?:aggregation|extension|dependency|onlyOne|zeroOrOne|oneOrMore|zeroOrMore)/i.test(sourceID);
+  clone.querySelectorAll("circle, ellipse, line, path, polygon, polyline, rect").forEach((shape, index) => {
+    const style = getComputedStyle(sourceShapes[index]);
+    if (style.stroke !== "none" && style.stroke !== "transparent") {
+      shape.setAttribute("stroke", roleColor);
+      shape.style.setProperty("stroke", roleColor, "important");
+    }
+    if (!hollowMarker && style.fill !== "none" && style.fill !== "transparent" && Number(style.fillOpacity || 1) !== 0) {
+      shape.setAttribute("fill", roleColor);
+      shape.style.setProperty("fill", roleColor, "important");
+    } else {
+      shape.setAttribute("fill", "none");
+      shape.style.setProperty("fill", "none", "important");
+    }
   });
   source.parentNode.append(clone);
   graph.markerCache.set(cacheKey, cloneID);
   return `url(#${cloneID})`;
 }
 
+function applyEdgeMarkers(edge) {
+  const markerRole = edge.walkthrough ? "walkthrough" : edge.preview ? "preview" : edge.role;
+  edge.markerPaths.forEach(({ path, originalMarkerStart, originalMarkerEnd }) => {
+    if (originalMarkerStart) {
+      path.setAttribute("marker-start", markerRole ? markerForRole(originalMarkerStart, markerRole) : originalMarkerStart);
+    }
+    if (originalMarkerEnd) {
+      path.setAttribute("marker-end", markerRole ? markerForRole(originalMarkerEnd, markerRole) : originalMarkerEnd);
+    }
+  });
+}
+
 function setEdgeRole(edge, role, dimmed = Boolean(selectedKey)) {
   edgeParts(edge).forEach((part) => {
     part.classList.toggle("atlas-incoming", role === "incoming");
     part.classList.toggle("atlas-outgoing", role === "outgoing");
-    part.classList.toggle("atlas-dimmed", !role && dimmed);
+    part.classList.remove("atlas-dimmed");
   });
-  edge.markerPaths.forEach(({ path, originalMarkerStart, originalMarkerEnd }) => {
-    if (originalMarkerStart) {
-      path.setAttribute("marker-start", role ? markerForRole(originalMarkerStart, role) : originalMarkerStart);
-    }
-    if (originalMarkerEnd) {
-      path.setAttribute("marker-end", role ? markerForRole(originalMarkerEnd, role) : originalMarkerEnd);
-    }
-  });
+  topLevelParts(edgeParts(edge)).forEach((part) => part.classList.toggle("atlas-dimmed", !role && dimmed));
+  edge.role = role;
+  applyEdgeMarkers(edge);
+}
+
+function setEdgeOverlay(edge, role, active) {
+  edge[role] = active;
+  applyEdgeMarkers(edge);
 }
 
 function relationshipRows(keys, relationship) {
@@ -1302,6 +1349,7 @@ export const atlasApi = {
   animateCameraTo,
   cancelCameraAnimation,
   setStatus,
+  setEdgeOverlay,
   onRender(subscriber) {
     renderSubscribers.add(subscriber);
     return () => renderSubscribers.delete(subscriber);

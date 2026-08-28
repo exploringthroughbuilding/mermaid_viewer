@@ -130,10 +130,19 @@ try {
     counter: document.querySelector(".walkthrough-counter").textContent,
     current: document.querySelectorAll(".atlas-walk-current").length,
     edges: document.querySelectorAll(".atlas-walk-edge").length,
+    dimmedRouteNodes: [...document.querySelectorAll(".atlas-walk-path.atlas-dimmed")].map((node) => ({
+      opacity: getComputedStyle(node).opacity,
+      paintDimmed: node.querySelectorAll(".atlas-paint-part.atlas-dimmed").length,
+    })),
+    markerRefs: [...document.querySelectorAll("path.atlas-walk-edge")]
+      .flatMap((path) => [path.getAttribute("marker-start"), path.getAttribute("marker-end")])
+      .filter(Boolean),
     caption: document.querySelector(".walkthrough-caption").textContent,
   }));
   check("human stepping advances and highlights the traversed edge",
-    highlighted.counter.startsWith("2") && highlighted.current > 0 && highlighted.edges > 0,
+    highlighted.counter.startsWith("2") && highlighted.current > 0 && highlighted.edges > 0
+      && highlighted.dimmedRouteNodes.every(({ opacity, paintDimmed }) => opacity === "0.62" && paintDimmed === 0)
+      && highlighted.markerRefs.every((reference) => reference.includes("atlas-walkthrough")),
     `current=${highlighted.current} edgeParts=${highlighted.edges}`);
 
   await page.keyboard.press("ArrowRight");

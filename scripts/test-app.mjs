@@ -182,6 +182,21 @@ try {
     exampleResults.push({ key, ...result, interaction });
   }
 
+  const expectedInteractionTargets = {
+    "flowchart-core": 4,
+    "sequence-core": 2,
+    "class-core": 3,
+    "state-core": 3,
+    "er-core": 2,
+    "gantt-core": 3,
+    "gitgraph-core": 3,
+    "timeline-core": 8,
+    "mindmap-core": 7,
+    "block-core": 4,
+    "architecture-core": 3,
+    "zenuml-core": 3,
+    "mindmap-tidy-tree": 4,
+  };
   const interactionFixtures = [];
   for (const fixture of diagramFixtures) {
     const analysis = analyzeDiagram(fixture.source);
@@ -217,6 +232,9 @@ try {
       if (interaction.targets.length || interaction.indexedKeys.length) issues.push("canvas diagram exposed selectable targets");
     } else {
       if (!interaction.targets.length) issues.push("no selectable targets");
+      if (fixture.id in expectedInteractionTargets && interaction.targets.length !== expectedInteractionTargets[fixture.id]) {
+        issues.push(`expected ${expectedInteractionTargets[fixture.id]} targets, found ${interaction.targets.length}`);
+      }
       if (interaction.targets.length !== interaction.indexedKeys.length) issues.push("target and index counts differ");
       if (new Set(interaction.targets.map(({ key }) => key)).size !== interaction.targets.length) issues.push("duplicate target keys");
       if (interaction.targets.some(({ key, paintParts, ownedPaintParts }) => !key || !paintParts || !ownedPaintParts)) {
@@ -251,6 +269,184 @@ try {
     interactionFixtures.push({ id: fixture.id, targets: interaction.targets.length });
   }
 
+  const renderSource = async (source) => {
+    await page.$eval("#source", (textarea, value) => {
+      textarea.value = value;
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    }, source);
+    await page.click("#render");
+    await page.waitForFunction(() => ["Diagram ready", "Render failed"].includes(document.querySelector("#status")?.textContent));
+    const status = await page.$eval("#status", (element) => element.textContent);
+    if (status !== "Diagram ready") throw new Error(`Fixture failed to render: ${source}`);
+  };
+
+  await renderSource(fixtureById("flowchart-core").source);
+  await page.click('#stage [data-graph-key="B"]');
+  const roundedParentDash = await page.$eval('#stage [data-graph-key="A"] .atlas-paint-part', (part) => getComputedStyle(part).strokeDasharray);
+  if (roundedParentDash !== "none" && roundedParentDash !== "0px") {
+    throw new Error(`Rounded flowchart parent retained a clumped dash pattern: ${roundedParentDash}`);
+  }
+  await renderSource("flowchart LR\n  A --> B --> C");
+  const chainedFlowchart = await page.evaluate(() => ({
+    nodes: document.querySelectorAll("#stage .atlas-node").length,
+    edges: document.querySelectorAll("#stage path.atlas-edge-part").length,
+  }));
+  if (chainedFlowchart.nodes !== 3 || chainedFlowchart.edges !== 2) {
+    throw new Error(`Chained flowchart extraction is incomplete: ${JSON.stringify(chainedFlowchart)}`);
+  }
+  await renderSource(`flowchart LR
+  A["returns X -> Y"]
+  A & B --> C & D`);
+  await page.click('#stage [data-graph-key="C"]');
+  const expandedFlowchart = await page.evaluate(() => ({
+    nodes: document.querySelectorAll("#stage .atlas-node").length,
+    edges: document.querySelectorAll("#stage path.atlas-edge-part").length,
+    parents: document.querySelectorAll("#stage .atlas-node.atlas-parent").length,
+    indexedFakeLabelNode: Boolean(document.querySelector('#stage [data-graph-key="X"]')),
+  }));
+  if (expandedFlowchart.nodes !== 4 || expandedFlowchart.edges !== 4 || expandedFlowchart.parents !== 2
+      || expandedFlowchart.indexedFakeLabelNode) {
+    throw new Error(`Flowchart fan-in/fan-out extraction is incomplete: ${JSON.stringify(expandedFlowchart)}`);
+  }
+  await renderSource(`flowchart LR
+  CFG_LOAD["config.Load() -> Config.Validate()\\nValidateUploadDir()"] --> CFG["cfg *config.Config"]`);
+  const canonicalFlowchartKeys = await page.$$eval("#stage .atlas-node", (nodes) => nodes.map((node) => node.dataset.graphKey).sort());
+  if (canonicalFlowchartKeys.join(",") !== "CFG,CFG_LOAD" || await page.$$eval("#stage path.atlas-edge-part", (edges) => edges.length) !== 1) {
+    throw new Error(`Flowchart renderer IDs did not resolve to semantic keys: ${JSON.stringify(canonicalFlowchartKeys)}`);
+  }
+
+  await renderSource(`sequenceDiagram
+  actor User
+  participant API
+  User->>API: Start
+  create participant Worker
+  API->>Worker: Run
+  create participant DB
+  Worker->>DB: Store`);
+  const extendedSequenceKeys = await page.$$eval("#stage .atlas-node", (nodes) => nodes.map((node) => node.dataset.graphKey).sort());
+  if (extendedSequenceKeys.join(",") !== "API,DB,User,Worker") {
+    throw new Error(`Sequence participant extraction is incomplete: ${JSON.stringify(extendedSequenceKeys)}`);
+  }
+
+  const linkedEdgeResults = {};
+  for (const [fixtureId, selectedKey] of [["mindmap-core", "Rendering"], ["mindmap-tidy-tree", "One"]]) {
+    await renderSource(fixtureById(fixtureId).source);
+    await page.click(`#stage [data-graph-key="${selectedKey}"]`);
+    linkedEdgeResults[fixtureId] = await page.evaluate(() => ({
+      incoming: document.querySelectorAll('#stage path[data-et="edge"].atlas-incoming').length,
+      outgoing: document.querySelectorAll('#stage path[data-et="edge"].atlas-outgoing').length,
+      dimmed: document.querySelectorAll('#stage path[data-et="edge"].atlas-dimmed').length,
+    }));
+    const result = linkedEdgeResults[fixtureId];
+    if (!result.incoming || !result.outgoing || !result.dimmed) {
+      throw new Error(`${fixtureId} links did not follow node selection: ${JSON.stringify(result)}`);
+    }
+  }
+
+  await renderSource(fixtureById("class-core").source);
+  await page.click('#stage [data-graph-key="Animal"]');
+  const classPaint = await page.evaluate(() => ({
+    terminalRoles: [...document.querySelectorAll("#stage g.edgeTerminals")]
+      .filter((terminal) => terminal.classList.contains("atlas-incoming") || terminal.classList.contains("atlas-dimmed")).length,
+    markerFills: [...document.querySelectorAll('#stage marker[id*="-atlas-"] path, #stage marker[id*="-atlas-"] polygon')]
+      .map((shape) => ({
+        fill: getComputedStyle(shape).fill,
+        marker: shape.closest("marker")?.id,
+        className: shape.getAttribute("class"),
+        attribute: shape.getAttribute("fill"),
+      })),
+    dimmedCardinalities: [...document.querySelectorAll("#stage g.edgeTerminals.atlas-dimmed")]
+      .map((terminal) => terminal.textContent.replace(/\s+/g, " ").trim())
+      .filter(Boolean),
+    sharedMarkerRoles: document.querySelectorAll("#stage marker.atlas-incoming, #stage marker.atlas-outgoing, #stage marker.atlas-dimmed").length,
+  }));
+  if (!classPaint.terminalRoles || classPaint.markerFills.some(({ fill }) => fill !== "none")
+      || !classPaint.dimmedCardinalities.includes("1") || !classPaint.dimmedCardinalities.includes("0..*")
+      || classPaint.sharedMarkerRoles) {
+    throw new Error(`Class relationship paint lost hollow markers or terminal labels: ${JSON.stringify(classPaint)}`);
+  }
+
+  await renderSource(fixtureById("er-core").source);
+  await page.click('#stage [data-graph-key="CUSTOMER"]');
+  const erPaint = await page.evaluate(() => ({
+    lineFill: getComputedStyle(document.querySelector("#stage path.relationshipLine")).fill,
+    lineWidth: getComputedStyle(document.querySelector("#stage path.relationshipLine")).strokeWidth,
+    originalLineWidth: document.querySelector("#stage path.relationshipLine").style.getPropertyValue("--atlas-original-stroke-width"),
+    markerFills: [...document.querySelectorAll('#stage marker[id*="-atlas-"] path, #stage marker[id*="-atlas-"] circle')]
+      .map((shape) => getComputedStyle(shape).fill),
+  }));
+  if (erPaint.lineFill !== "none" || erPaint.lineWidth !== erPaint.originalLineWidth || erPaint.markerFills.some((fill) => fill !== "none")) {
+    throw new Error(`ER highlighting filled line geometry: ${JSON.stringify(erPaint)}`);
+  }
+
+  if (!await page.$eval("#group-index", (button) => button.classList.contains("active"))) await page.click("#group-index");
+  const groupContracts = {
+    "state-core": ["Active", "Ungrouped"],
+    "gantt-core": ["Build"],
+    "block-core": ["group", "Ungrouped"],
+    "architecture-core": ["Cloud", "Ungrouped"],
+    "gitgraph-core": ["feature", "main"],
+    "timeline-core": ["Core", "Plugins"],
+  };
+  const groupedFixtures = {};
+  for (const [fixtureId, expectedGroups] of Object.entries(groupContracts)) {
+    await renderSource(fixtureById(fixtureId).source);
+    const labels = await page.$$eval("#node-list .node-index-group .group-heading-button span", (elements) => elements.map((element) => element.textContent.trim()));
+    groupedFixtures[fixtureId] = labels;
+    if (expectedGroups.some((label) => !labels.includes(label))) {
+      throw new Error(`${fixtureId} grouping is incomplete: ${JSON.stringify(labels)}`);
+    }
+  }
+
+  const themePaint = {};
+  for (const theme of ["light", "dark"]) {
+    if (await page.$eval(".app-root", (root) => root.dataset.theme) !== theme) {
+      await page.click(".theme-toggle");
+      await page.waitForFunction((value) => document.querySelector(".app-root")?.dataset.theme === value, {}, theme);
+    }
+    await renderSource(fixtureById("sequence-core").source);
+    const sequenceNumbers = await page.$$eval("#stage text.sequenceNumber", (elements) => elements.map((element) => getComputedStyle(element).fill));
+    const expectedNumberColor = theme === "dark" ? "rgb(231, 237, 246)" : "rgb(23, 32, 51)";
+    if (!sequenceNumbers.length || sequenceNumbers.some((color) => color !== expectedNumberColor)) {
+      throw new Error(`Sequence numbers have low-contrast ${theme} paint: ${JSON.stringify(sequenceNumbers)}`);
+    }
+
+    await renderSource(fixtureById("pie-core").source);
+    const pie = await page.evaluate(() => ({
+      fills: [...document.querySelectorAll("#stage .pieCircle")].map((slice) => getComputedStyle(slice).fill),
+      opacity: [...document.querySelectorAll("#stage .pieCircle")].map((slice) => getComputedStyle(slice).opacity),
+      contrasts: (() => {
+        const parse = (value) => value.match(/[\d.]+/g).slice(0, 3).map(Number);
+        const luminance = (value) => {
+          const channels = parse(value).map((channel) => {
+            const normalized = channel / 255;
+            return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+          });
+          return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+        };
+        const canvas = luminance(getComputedStyle(document.querySelector("#viewport")).backgroundColor);
+        return [...document.querySelectorAll("#stage .pieCircle")].map((slice) => {
+          const fill = luminance(getComputedStyle(slice).fill);
+          return (Math.max(fill, canvas) + 0.05) / (Math.min(fill, canvas) + 0.05);
+        });
+      })(),
+    }));
+    if (!pie.fills.length || new Set(pie.fills).size !== pie.fills.length || pie.opacity.some((opacity) => opacity !== "1")
+        || pie.contrasts.some((contrast) => contrast < 3)) {
+      throw new Error(`Pie palette is not distinct and opaque in ${theme}: ${JSON.stringify(pie)}`);
+    }
+
+    await renderSource(fixtureById("quadrant-core").source);
+    const quadrantLabels = await page.$$eval("#stage text", (elements) => elements
+      .filter((element) => element.textContent.trim())
+      .map((element) => getComputedStyle(element).fill));
+    if (theme === "dark" && quadrantLabels.some((fill) => fill === "rgb(23, 32, 51)")) {
+      throw new Error(`Quadrant retained dark-on-dark labels: ${JSON.stringify(quadrantLabels)}`);
+    }
+    themePaint[theme] = { sequenceNumbers, pie, quadrantLabels };
+  }
+  if (await page.$eval("#group-index", (button) => button.classList.contains("active"))) await page.click("#group-index");
+
   const architectureFixture = diagramFixtures.find(({ id }) => id === "architecture-core");
   const architecturePaint = [];
   for (const theme of ["light", "dark"]) {
@@ -269,7 +465,7 @@ try {
     await page.waitForFunction(() => document.querySelector("#status")?.textContent === "Diagram ready");
     const before = await page.evaluate(() => ({
       iconParts: [...document.querySelectorAll('#stage .atlas-node[data-graph-key="client"] .atlas-paint-part')]
-        .map((part) => ({ className: part.getAttribute("class"), stroke: getComputedStyle(part).stroke })),
+        .map((part) => ({ className: part.getAttribute("class"), stroke: getComputedStyle(part).stroke, fill: getComputedStyle(part).fill })),
       backgrounds: [...document.querySelectorAll("#stage .architecture-service rect.background")]
         .map((part) => getComputedStyle(part).stroke),
     }));
@@ -278,14 +474,20 @@ try {
     const result = await page.evaluate(() => ({
       selected: document.querySelector("#stage .atlas-node.atlas-selected")?.dataset.graphKey,
       iconParts: [...document.querySelectorAll('#stage .atlas-node[data-graph-key="client"] .atlas-paint-part')]
-        .map((part) => ({ className: part.getAttribute("class"), stroke: getComputedStyle(part).stroke })),
+        .map((part) => ({ className: part.getAttribute("class"), stroke: getComputedStyle(part).stroke, fill: getComputedStyle(part).fill })),
       paintedBackgrounds: document.querySelectorAll("#stage .architecture-service rect.background.atlas-paint-part").length,
       backgrounds: [...document.querySelectorAll("#stage .architecture-service rect.background")]
         .map((part) => getComputedStyle(part).stroke),
+      textFills: [...document.querySelectorAll("#stage .architecture-service text, #stage .architecture-group text")]
+        .filter((label) => label.textContent.trim())
+        .map((label) => getComputedStyle(label).fill),
     }));
     const iconStrokeChanged = result.iconParts.some(({ stroke }, index) => stroke !== before.iconParts[index].stroke);
+    const iconFillChanged = result.iconParts.some(({ fill }, index) => fill !== before.iconParts[index].fill);
     const backgroundChanged = result.backgrounds.some((stroke, index) => stroke !== before.backgrounds[index]);
-    if (result.selected !== "client" || !result.iconParts.length || !iconStrokeChanged || result.paintedBackgrounds || backgroundChanged) {
+    const darkText = theme === "dark" && result.textFills.some((fill) => fill === "rgb(23, 32, 51)" || fill === "rgb(0, 0, 0)");
+    if (result.selected !== "client" || !result.iconParts.length || !iconStrokeChanged || iconFillChanged
+        || result.paintedBackgrounds || backgroundChanged || darkText) {
       throw new Error(`Architecture selection included non-icon paint parts in ${theme} mode: ${JSON.stringify({ before, result })}`);
     }
     architecturePaint.push({ theme, ...result });

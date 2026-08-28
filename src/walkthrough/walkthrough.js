@@ -66,7 +66,8 @@ function clearHighlights() {
     node.element?.classList.remove("atlas-walk-path", "atlas-walk-current");
   });
   graph.edges.forEach((edge) => {
-    [...edge.pathParts, ...edge.arrowParts].forEach((part) => part.classList.remove("atlas-walk-edge"));
+    [...edge.pathParts, ...edge.arrowParts, ...edge.labelParts].forEach((part) => part.classList.remove("atlas-walk-edge"));
+    atlasApi.setEdgeOverlay(edge, "walkthrough", false);
   });
 }
 
@@ -94,7 +95,8 @@ function paintStep(index) {
   if (!previous) return;
   const edge = edgeBetween(previous.nodeId, current.nodeId);
   if (!edge) return;
-  [...edge.pathParts, ...edge.arrowParts].forEach((part) => part.classList.add("atlas-walk-edge"));
+  [...edge.pathParts, ...edge.arrowParts, ...edge.labelParts].forEach((part) => part.classList.add("atlas-walk-edge"));
+  atlasApi.setEdgeOverlay(edge, "walkthrough", true);
 }
 
 function renderBar(index) {

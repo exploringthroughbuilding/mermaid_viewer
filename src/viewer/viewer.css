@@ -264,7 +264,7 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .stage .atlas-paint-part,
 .stage .atlas-edge-part { transition: opacity 120ms ease, stroke 120ms ease, stroke-width 120ms ease, fill 120ms ease; }
 .stage .atlas-paint-part.atlas-selected { stroke: var(--coral) !important; stroke-width: 4px !important; }
-.stage .atlas-paint-part.atlas-parent { stroke: #7655b5 !important; stroke-width: 3px !important; stroke-dasharray: 8 4; }
+.stage .atlas-paint-part.atlas-parent { stroke: #7655b5 !important; stroke-width: 3px !important; }
 .stage .atlas-paint-part.atlas-child { stroke: #25866a !important; stroke-width: 3px !important; }
 .stage .atlas-paint-part.atlas-bidirectional { stroke: #be7a21 !important; stroke-width: 4px !important; }
 .stage text.atlas-paint-part.atlas-selected { fill: var(--coral) !important; }
@@ -274,10 +274,18 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .stage .atlas-dimmed { opacity: .1 !important; }
 .stage .atlas-edge-part.atlas-incoming { stroke: #7655b5 !important; stroke-width: 3.5px !important; stroke-dasharray: 9 5; opacity: 1 !important; }
 .stage .atlas-edge-part.atlas-outgoing { stroke: #25866a !important; stroke-width: 3.5px !important; opacity: 1 !important; }
+.stage path.relationshipLine.atlas-incoming,
+.stage path.relationshipLine.atlas-outgoing { fill: none !important; stroke-width: var(--atlas-original-stroke-width) !important; }
 .stage .atlas-edge-label { transition: opacity 120ms ease, color 120ms ease; }
 .stage .atlas-edge-label.atlas-incoming { color: #604294; opacity: 1 !important; }
 .stage .atlas-edge-label.atlas-outgoing { color: #1d7058; opacity: 1 !important; }
 .stage .atlas-edge-label.atlas-preview { color: #8b5715; opacity: 1 !important; }
+.stage text.atlas-edge-label.atlas-incoming,
+.stage .atlas-edge-label.atlas-incoming text { fill: #604294 !important; }
+.stage text.atlas-edge-label.atlas-outgoing,
+.stage .atlas-edge-label.atlas-outgoing text { fill: #1d7058 !important; }
+.stage text.atlas-edge-label.atlas-preview,
+.stage .atlas-edge-label.atlas-preview text { fill: #8b5715 !important; }
 .stage .atlas-paint-part.atlas-preview,
 .stage .atlas-edge-part.atlas-preview { stroke: #c6872d !important; stroke-width: 5px !important; stroke-dasharray: 6 3; filter: drop-shadow(0 0 5px rgb(198 135 45 / 48%)); opacity: 1 !important; }
 
@@ -387,6 +395,7 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 
 .stage .atlas-node.atlas-walk-path.atlas-dimmed,
 .stage .atlas-walk-path.atlas-dimmed { opacity: .62 !important; }
+.stage .atlas-node.atlas-walk-path.atlas-dimmed .atlas-paint-part { opacity: 1 !important; }
 .stage .atlas-walk-current .atlas-paint-part { stroke: var(--coral) !important; stroke-width: 4.5px !important; }
 /* Must out-specify the .atlas-incoming/.atlas-outgoing role rules (0,3,0) that
    selection paints on the same elements, so the traversed hop reads as the
@@ -394,6 +403,8 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .stage .atlas-edge-part.atlas-walk-edge { opacity: 1 !important; stroke: var(--coral) !important; stroke-width: 4.5px !important; }
 .stage path.atlas-edge-part.atlas-walk-edge { stroke-dasharray: 10 6; animation: walk-dash 700ms linear infinite; }
 .stage .atlas-edge-label.atlas-walk-edge { color: var(--coral); opacity: 1 !important; }
+.stage text.atlas-edge-label.atlas-walk-edge,
+.stage .atlas-edge-label.atlas-walk-edge text { fill: var(--coral) !important; }
 
 @keyframes walk-dash { to { stroke-dashoffset: -30; } }
 

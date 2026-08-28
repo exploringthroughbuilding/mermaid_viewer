@@ -50,8 +50,55 @@ describe("semantic analysis", () => {
     expect(analysis.relations).toHaveLength(1);
   });
 
-  it("does not invent relationships for ordered diagrams", () => {
-    expect(analyzeDiagram(fixtureById("gitgraph-core").source).relations).toEqual([]);
-    expect(analyzeDiagram(fixtureById("timeline-core").source).mode).toBe("ordered");
+  it("indexes every node in chained flowchart links", () => {
+    const analysis = analyzeDiagram("flowchart LR\n  A --> B --> C");
+    expect(analysis.items.map(({ key }) => key)).toEqual(["A", "B", "C"]);
+    expect(analysis.relations.map(({ from, to }) => [from, to])).toEqual([["A", "B"], ["B", "C"]]);
+  });
+
+  it("expands flowchart fan-in and fan-out without parsing arrows inside labels", () => {
+    const analysis = analyzeDiagram(`flowchart LR
+  A["returns X -> Y"]
+  A & B --> C & D
+  C -. failure .-> E`);
+    expect(analysis.items.find(({ key }) => key === "A")?.label).toBe("returns X -> Y");
+    expect(analysis.items.some(({ key }) => key === "X")).toBe(false);
+    expect(analysis.relations.map(({ from, to, label }) => [from, to, label])).toEqual([
+      ["A", "C", ""],
+      ["A", "D", ""],
+      ["B", "C", ""],
+      ["B", "D", ""],
+      ["C", "E", "failure"],
+    ]);
+  });
+
+  it("derives Git ancestry and branch groups from checkout state", () => {
+    const analysis = analyzeDiagram(fixtureById("gitgraph-core").source);
+    expect(analysis.mode).toBe("relational");
+    expect(analysis.groups.map(({ label }) => label)).toEqual(["main", "feature"]);
+    expect(analysis.relations.map(({ from, to }) => [from, to])).toEqual([
+      ["commit-1", "commit-4"],
+      ["commit-1", "commit-6"],
+      ["commit-4", "commit-6"],
+    ]);
+  });
+
+  it("groups timeline events beneath their periods", () => {
+    const analysis = analyzeDiagram(fixtureById("timeline-core").source);
+    expect(analysis.mode).toBe("relational");
+    expect(analysis.groups.map(({ label }) => label)).toEqual(["Core", "Plugins"]);
+    expect(analysis.items).toHaveLength(8);
+    expect(analysis.relations).toHaveLength(5);
+  });
+
+  it("preserves source-defined groups for state, block, Gantt, and architecture", () => {
+    const grouped = ["state-core", "block-core", "gantt-core", "architecture-core"]
+      .map((id) => analyzeDiagram(fixtureById(id).source));
+    expect(grouped.map(({ groups }) => groups.map(({ label }) => label))).toEqual([
+      ["Active"],
+      ["group"],
+      ["Build"],
+      ["Cloud"],
+    ]);
   });
 });

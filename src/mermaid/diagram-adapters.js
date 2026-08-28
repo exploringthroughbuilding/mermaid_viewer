@@ -45,7 +45,15 @@ function sourceRows(source) {
 function collection() {
   const items = new Map();
   const relations = [];
-  const addItem = (key, label, line, aliases = []) => {
+  const groups = [];
+  const addGroup = (key, label, line, parentKey) => {
+    const existing = groups.find((group) => group.key === key);
+    if (existing) return existing;
+    const group = { key, label, line, parentKey };
+    groups.push(group);
+    return group;
+  };
+  const addItem = (key, label, line, aliases = [], metadata = {}) => {
     const cleanKey = String(key || label || "").trim();
     const cleanLabel = String(label || key || "").trim().replace(/^['"]|['"]$/g, "");
     if (!cleanKey || !cleanLabel) return undefined;
@@ -54,21 +62,27 @@ function collection() {
     if (existing) {
       existing.aliases = [...new Set([...existing.aliases, ...nextAliases])];
       if (existing.line == null && line != null) existing.line = line;
+      Object.assign(existing, metadata);
       return existing;
     }
-    const item = { key: cleanKey, label: cleanLabel, line, aliases: nextAliases };
+    const item = { key: cleanKey, label: cleanLabel, line, aliases: nextAliases, ...metadata };
     items.set(cleanKey, item);
     return item;
   };
-  const addRelation = (from, to, line, label = "") => {
+  const addRelation = (from, to, line, label = "", metadata = {}) => {
     if (!from || !to || from === to) return;
     addItem(from, from, line);
     addItem(to, to, line);
-    if (!relations.some((relation) => relation.from === from && relation.to === to && relation.line === line)) {
-      relations.push({ from, to, line, label });
+    const existing = relations.find((relation) => relation.from === from && relation.to === to && relation.line === line);
+    if (existing) {
+      Object.assign(existing, metadata);
+      return existing;
     }
+    const relation = { from, to, line, label, ...metadata };
+    relations.push(relation);
+    return relation;
   };
-  return { items, relations, addItem, addRelation };
+  return { items, relations, groups, addGroup, addItem, addRelation };
 }
 
 function identifier(fragment) {
@@ -77,44 +91,126 @@ function identifier(fragment) {
 }
 
 function displayLabel(fragment, fallback) {
-  return fragment.match(/[\[({]{1,2}["']?([^\])}"']+)["']?[\])}]{1,2}/)?.[1]?.trim() || fallback;
+  const quoted = fragment.match(/^[A-Za-z_][\w.-]*\s*[\[({>]{1,2}["']([\s\S]*?)["'][\])}]{1,2}/)?.[1];
+  return quoted?.trim()
+    || fragment.match(/[\[({]{1,2}["']?([^\])}"']+)["']?[\])}]{1,2}/)?.[1]?.trim()
+    || fallback;
+}
+
+function graphLinkParts(text) {
+  const fragments = [];
+  const operators = [];
+  let start = 0;
+  let depth = 0;
+  let quote = "";
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (character === quote && text[index - 1] !== "\\") quote = "";
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if ("[({".includes(character)) {
+      depth += 1;
+      continue;
+    }
+    if ("])}".includes(character)) {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (depth) continue;
+    const remainder = text.slice(index);
+    const dotted = remainder.match(/^-\.\s*(.*?)\s*\.->/);
+    const arrow = dotted || remainder.match(/^(?:<[-=.]+>|[-=.]+>|<[-=.]+|[-=.]+)/);
+    if (!arrow) continue;
+    fragments.push(text.slice(start, index).trim());
+    operators.push({ token: arrow[0], label: dotted?.[1]?.trim() || "" });
+    index += arrow[0].length - 1;
+    start = index + 1;
+  }
+  if (!operators.length) return null;
+  fragments.push(text.slice(start).trim());
+  return { fragments, operators };
+}
+
+function graphEndpoints(fragment) {
+  const inlineLabel = fragment.match(/^\|([^|]+)\|\s*(.*)$/);
+  const source = inlineLabel?.[2] || fragment;
+  const endpoints = source.split(/\s+&\s+/).map((entry) => {
+    const key = identifier(entry);
+    return key ? { key, label: displayLabel(entry, key) } : null;
+  }).filter(Boolean);
+  return { endpoints, label: inlineLabel?.[1]?.trim() || "" };
+}
+
+function graphDeclarations(text) {
+  const declarations = [];
+  let depth = 0;
+  let quote = "";
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (character === quote && text[index - 1] !== "\\") quote = "";
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if ("[({".includes(character)) {
+      depth += 1;
+      continue;
+    }
+    if ("])}".includes(character)) {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (depth || !/[A-Za-z_]/.test(character) || (index > 0 && !/[\s&]/.test(text[index - 1]))) continue;
+    const match = text.slice(index).match(/^([A-Za-z_][\w.-]*)\s*(?=\[|\(|\{|>|@\{)/);
+    if (!match) continue;
+    declarations.push({ key: match[1], label: displayLabel(text.slice(index), match[1]) });
+    index += match[0].length - 1;
+  }
+  return declarations;
 }
 
 function parseGraph(rows) {
   const result = collection();
   rows.forEach(({ text, line }) => {
     if (!text || text.startsWith("%%") || /^(flowchart|graph|block-beta|columns|direction)\b/i.test(text)) return;
-    const declaration = text.match(/^(?:class\s+)?([A-Za-z_][\w.-]*)\s*(?:\[|\(|\{|>|@\{)/);
-    if (declaration) result.addItem(declaration[1], displayLabel(text.slice(declaration.index), declaration[1]), line);
-    // block diagrams may declare several labelled nodes on a single row.
-    for (const match of text.matchAll(/(?:^|\s)([A-Za-z_][\w.-]*)\s*(?:\[|\(|\{|>)/g)) {
-      const fragment = text.slice(match.index + match[0].indexOf(match[1]));
-      result.addItem(match[1], displayLabel(fragment, match[1]), line);
-    }
+    graphDeclarations(text).forEach(({ key, label }) => result.addItem(key, label, line));
     const architecture = text.match(/^([A-Za-z_][\w.-]*):[LRBT]\s+[-=.]+>\s+[LRBT]:([A-Za-z_][\w.-]*)/);
-    if (architecture) result.addRelation(architecture[1], architecture[2], line);
-    const dottedLabel = text.match(/^(.+?)\s*-\.\s*(.*?)\s*\.->\s*(.+)$/);
-    if (dottedLabel) {
-      const left = identifier(dottedLabel[1]);
-      const right = identifier(dottedLabel[3]);
-      if (left && right) {
-        result.addItem(left, displayLabel(dottedLabel[1], left), line);
-        result.addItem(right, displayLabel(dottedLabel[3], right), line);
-        result.addRelation(left, right, line, dottedLabel[2]);
-      }
+    if (architecture) {
+      result.addRelation(architecture[1], architecture[2], line);
       return;
     }
-    const arrow = text.match(/^(.+?)\s*(<[-=.]+>|[-=.]+>|<[-=.]+|[-=.]+)\s*(.+?)(?:\s*:\s*(.*))?$/);
-    if (!arrow) return;
-    const left = identifier(arrow[1]);
-    const inlineLabel = arrow[3].match(/^\|([^|]+)\|\s*(.+)$/);
-    const rightFragment = inlineLabel?.[2] || arrow[3];
-    const right = identifier(rightFragment);
-    if (!left || !right) return;
-    result.addItem(left, displayLabel(arrow[1], left), line);
-    result.addItem(right, displayLabel(rightFragment, right), line);
-    const pointsLeft = arrow[2].startsWith("<") && !arrow[2].endsWith(">");
-    result.addRelation(pointsLeft ? right : left, pointsLeft ? left : right, line, inlineLabel?.[1] || arrow[4]);
+    const links = graphLinkParts(text);
+    if (!links) return;
+    const endpointGroups = links.fragments.map(graphEndpoints);
+    links.operators.forEach((operator, index) => {
+      const left = endpointGroups[index];
+      const right = endpointGroups[index + 1];
+      left.endpoints.forEach((endpoint) => result.addItem(endpoint.key, endpoint.label, line));
+      right.endpoints.forEach((endpoint) => result.addItem(endpoint.key, endpoint.label, line));
+      const pointsLeft = operator.token.startsWith("<") && !operator.token.endsWith(">");
+      left.endpoints.forEach((leftEndpoint) => right.endpoints.forEach((rightEndpoint) => {
+        result.addRelation(
+          pointsLeft ? rightEndpoint.key : leftEndpoint.key,
+          pointsLeft ? leftEndpoint.key : rightEndpoint.key,
+          line,
+          operator.label || right.label,
+        );
+      }));
+    });
+  });
+  rows.forEach(({ text, line }) => {
+    const standalone = text.match(/^([A-Za-z_][\w.-]*)(?:\s*(?:\[.*\]|\(.*\)|\{.*\}|>.*]))?$/);
+    if (standalone && !/^(end|class|style|linkStyle)$/i.test(standalone[1])) {
+      result.addItem(standalone[1], displayLabel(text, standalone[1]), line);
+    }
   });
   return result;
 }
@@ -123,7 +219,7 @@ function parseSequence(rows, zen = false) {
   const result = collection();
   rows.forEach(({ text, line }) => {
     if (!text || /^(sequenceDiagram|zenuml|title\b|autonumber\b|activate\b|deactivate\b|Note\b|loop\b|alt\b|else\b|opt\b|par\b|and\b|critical\b|break\b|end\b|if\b|while\b|for(?:Each)?\b|try\b|catch\b|finally\b|return\b|\/\/)/i.test(text)) return;
-    const participant = text.match(/^(?:participant|actor)\s+([\w.-]+)(?:\s+as\s+(.+))?$/i)
+    const participant = text.match(/^(?:(?:create\s+)?(?:participant|actor)|participant)\s+([\w.-]+)(?:\s+as\s+(.+))?(?:\s+@\{.*})?$/i)
       || (zen ? text.match(/^@(?:Actor|Database|Boundary|Control|Entity|Queue)\s+([\w.-]+)(?:\s+as\s+(.+))?$/i) : null)
       || (zen ? text.match(/^([\w.-]+)\s+as\s+(.+)$/i) : null);
     if (participant) {
@@ -139,6 +235,72 @@ function parseSequence(rows, zen = false) {
       const call = text.match(/^(?:[\w<>]+\s+)?(?:[\w.-]+\s*=\s*)?(?:new\s+)?([A-Za-z_][\w.-]*)\s*\.\s*[\w$]+\s*\(/);
       if (call) result.addItem(call[1], call[1], line);
       else if (/^[A-Za-z_][\w.-]*$/.test(text)) result.addItem(text, text, line);
+    }
+  });
+  return result;
+}
+
+function parseState(rows) {
+  const result = collection();
+  const stack = [];
+  rows.forEach(({ text, line }) => {
+    if (!text || /^(stateDiagram(?:-v2)?|direction|note\b|end note\b)/i.test(text)) return;
+    if (text === "}") {
+      stack.pop();
+      return;
+    }
+    const composite = text.match(/^state\s+(?:"([^"]+)"\s+as\s+)?([\w.-]+)\s*\{$/i)
+      || text.match(/^state\s+([\w.-]+)\s*\{$/i);
+    if (composite) {
+      const key = composite[2] || composite[1];
+      const label = composite[1] && composite[2] ? composite[1] : key;
+      const parent = stack.at(-1);
+      result.addItem(key, label, line, [], parent ? { groupKey: parent.key, groupLabel: parent.label } : {});
+      result.addGroup(`state:${key}`, label, line, parent?.key);
+      stack.push({ key: `state:${key}`, stateKey: key, label });
+      return;
+    }
+    const declaration = text.match(/^state\s+"([^"]+)"\s+as\s+([\w.-]+)/i)
+      || text.match(/^state\s+([\w.-]+)(?:\s*:\s*(.+))?$/i);
+    if (declaration) {
+      const key = declaration[2] && text.includes(" as ") ? declaration[2] : declaration[1];
+      const label = declaration[2] && text.includes(" as ") ? declaration[1] : declaration[2] || key;
+      const group = stack.at(-1);
+      result.addItem(key, label, line, [], group ? { groupKey: group.key, groupLabel: group.label } : {});
+    }
+    const transition = text.match(/^([^\s]+)\s*[-=.]+>\s*([^\s:]+)(?:\s*:\s*(.*))?$/);
+    if (!transition) return;
+    const group = stack.at(-1);
+    [transition[1], transition[2]].forEach((key) => {
+      if (key !== "[*]") result.addItem(key, key, line, [], group ? { groupKey: group.key, groupLabel: group.label } : {});
+    });
+    if (transition[1] !== "[*]" && transition[2] !== "[*]") {
+      result.addRelation(transition[1], transition[2], line, transition[3]);
+    }
+  });
+  return result;
+}
+
+function parseBlock(rows) {
+  const result = parseGraph(rows);
+  const stack = [];
+  rows.forEach(({ text, line, indent }) => {
+    const group = text.match(/^block:([\w.-]+)(?::\d+)?$/i);
+    if (group) {
+      const parent = stack.at(-1);
+      const entry = result.addGroup(`block:${group[1]}`, group[1], line, parent?.key);
+      stack.push({ ...entry, indent });
+      return;
+    }
+    if (/^end$/i.test(text)) {
+      stack.pop();
+      return;
+    }
+    const parent = stack.at(-1);
+    if (!parent || !text || /^(columns|space)\b/i.test(text)) return;
+    for (const match of text.matchAll(/(?:^|\s)([A-Za-z_][\w.-]*)\s*(?:\[|\(|\{|>)/g)) {
+      const item = result.items.get(match[1]);
+      if (item) Object.assign(item, { groupKey: parent.key, groupLabel: parent.label });
     }
   });
   return result;
@@ -170,17 +332,38 @@ function parseIndented(rows, declaration, labelFor = (text) => text) {
   return result;
 }
 
+function parseMindmap(rows) {
+  const result = parseIndented(rows, /^mindmap$/i, (text) => text
+    .replace(/^\w+\(\((.*)\)\)$/, "$1")
+    .replace(/^[-+]\s*/, ""));
+  const ordinals = new Map();
+  [...result.items.values()].forEach((item, index) => {
+    item.rendererOrdinal = index;
+    ordinals.set(item.key, index);
+  });
+  result.relations.forEach((relation) => {
+    relation.rendererEdgeId = `edge_${ordinals.get(relation.from)}_${ordinals.get(relation.to)}`;
+  });
+  return result;
+}
+
 function parseGantt(rows) {
   const result = collection();
+  let currentGroup;
   rows.forEach(({ text, line }) => {
-    if (!text || /^(gantt|title|dateFormat|axisFormat|tickInterval|excludes|includes|todayMarker|section)\b/i.test(text)) return;
+    const section = text.match(/^section\s+(.+)$/i);
+    if (section) {
+      currentGroup = result.addGroup(`gantt:${result.groups.length}`, section[1].trim(), line);
+      return;
+    }
+    if (!text || /^(gantt|title|dateFormat|axisFormat|tickInterval|excludes|includes|todayMarker)\b/i.test(text)) return;
     const task = text.match(/^(.+?)\s*:\s*(.+)$/);
     if (!task) return;
     const fields = task[2].split(",").map((value) => value.trim());
-    const id = fields.find((value) => /^[A-Za-z_][\w-]*$/.test(value) && !/^(done|active|crit|milestone)$/i.test(value)) || task[1].trim();
-    result.addItem(id, task[1].trim(), line);
-    const dependency = fields.join(",").match(/\bafter\s+([\w-]+)/i);
-    if (dependency) result.addRelation(dependency[1], id, line);
+    const id = fields.find((value) => /^[A-Za-z_][\w-]*$/.test(value) && !/^(done|active|crit|milestone|vert)$/i.test(value)) || task[1].trim();
+    result.addItem(id, task[1].trim(), line, [], currentGroup ? { groupKey: currentGroup.key, groupLabel: currentGroup.label } : {});
+    const dependency = fields.join(",").match(/\bafter\s+([\w -]+)/i);
+    dependency?.[1].trim().split(/\s+/).forEach((parent) => result.addRelation(parent, id, line));
   });
   return result;
 }
@@ -188,16 +371,42 @@ function parseGantt(rows) {
 function parseArchitecture(rows) {
   const result = parseGraph(rows);
   rows.forEach(({ text, line }) => {
-    const item = text.match(/^(?:service|group|junction)\s+([\w-]+)(?:\([^)]*\))?\s*(?:\[([^\]]+)\])?/i);
+    const item = text.match(/^(service|group|junction)\s+([\w-]+)(?:\([^)]*\))?\s*(?:\[([^\]]+)\])?(?:\s+in\s+([\w-]+))?/i);
     if (item) {
-      const label = item[2] || item[1];
-      const semanticItem = result.addItem(item[1], label, line);
+      const label = item[3] || item[2];
+      if (item[1].toLowerCase() === "group") result.addGroup(`architecture:${item[2]}`, label, line);
+      const parent = item[4] && result.groups.find((group) => group.key === `architecture:${item[4]}`);
+      const semanticItem = result.addItem(item[2], label, line, [], parent ? { groupKey: parent.key, groupLabel: parent.label } : {});
       // The graph parser sees the icon name first; architecture renders [Label].
       if (semanticItem) {
         semanticItem.label = label;
         semanticItem.aliases = [...new Set([...semanticItem.aliases, label])];
       }
     }
+  });
+  return result;
+}
+
+function parseTimeline(rows) {
+  const result = collection();
+  let currentGroup;
+  rows.forEach(({ text, line }, index) => {
+    if (!text || /^(timeline|title\b)/i.test(text)) return;
+    const section = text.match(/^section\s+(.+)$/i);
+    if (section) {
+      currentGroup = result.addGroup(`timeline:${result.groups.length}`, section[1].trim(), line);
+      return;
+    }
+    const parts = text.split(" : ").map((part) => part.trim()).filter(Boolean);
+    if (!parts.length) return;
+    const metadata = currentGroup ? { groupKey: currentGroup.key, groupLabel: currentGroup.label } : {};
+    const taskKey = `timeline-task-${index}`;
+    result.addItem(taskKey, parts[0], line, [text], { ...metadata, kind: "task" });
+    parts.slice(1).forEach((label, eventIndex) => {
+      const eventKey = `timeline-event-${index}-${eventIndex}`;
+      result.addItem(eventKey, label, line, [], { ...metadata, kind: "event" });
+      result.addRelation(taskKey, eventKey, line);
+    });
   });
   return result;
 }
@@ -249,7 +458,10 @@ function parseClass(rows) {
     const relation = text.replace(/"[^"]*"/g, "").match(
       /^([A-Za-z_][\w.-]*)\s+(?:<\|--|<\|\.\.|o--|\*--|--o|--\*|-->|<--|--\|>|<\.\.|--\.)\s+([A-Za-z_][\w.-]*)(?:\s*:\s*(.*))?$/,
     );
-    if (relation) result.addRelation(relation[1], relation[2], line, relation[3]);
+    if (relation) {
+      const cardinalities = [...text.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+      result.addRelation(relation[1], relation[2], line, relation[3], { cardinalities });
+    }
   });
   return result;
 }
@@ -329,27 +541,55 @@ function parseOrdered(rows, declaration) {
 
 function parseGit(rows) {
   const result = collection();
+  const branches = new Map([["main", null]]);
+  let currentBranch = "main";
+  result.addGroup("git:main", "main", 0);
   rows.forEach(({ text, line }, index) => {
-    const label = text.match(/^commit(?:\s+id:\s*["']([^"']+)["'])?/i)?.[1]
-      || text.match(/^merge\s+\S+(?:\s+id:\s*["']([^"']+)["'])?/i)?.[1];
-    if (label) result.addItem(`commit-${index}`, label, line, [text]);
+    const branch = text.match(/^branch\s+([^\s]+)/i);
+    if (branch) {
+      const branchPoint = branches.get(currentBranch) || null;
+      currentBranch = branch[1];
+      branches.set(currentBranch, branchPoint);
+      result.addGroup(`git:${currentBranch}`, currentBranch, line);
+      return;
+    }
+    const checkout = text.match(/^(?:checkout|switch)\s+([^\s]+)/i);
+    if (checkout) {
+      currentBranch = checkout[1];
+      if (!branches.has(currentBranch)) branches.set(currentBranch, null);
+      result.addGroup(`git:${currentBranch}`, currentBranch, line);
+      return;
+    }
+    const commit = text.match(/^commit(?:\s+id:\s*["']([^"']+)["'])?/i);
+    const merge = text.match(/^merge\s+(\S+)(?:\s+id:\s*["']([^"']+)["'])?/i);
+    if (!commit && !merge) return;
+    const key = `commit-${index}`;
+    const label = commit?.[1] || merge?.[2] || `Commit ${index}`;
+    result.addItem(key, label, line, [text], { groupKey: `git:${currentBranch}`, groupLabel: currentBranch });
+    const head = branches.get(currentBranch);
+    if (head) result.addRelation(head, key, line);
+    if (merge) {
+      const mergedHead = branches.get(merge[1]);
+      if (mergedHead) result.addRelation(mergedHead, key, line);
+    }
+    branches.set(currentBranch, key);
   });
   return result;
 }
 
 const adapters = [
   { id: "flowchart", detect: /^(?:flowchart|graph)(?:-elk)?\b/i, mode: RELATIONAL, selectors: selectorSets.graph, vocabulary: ["Parents", "Children"], parse: parseGraph },
-  { id: "block", detect: /^block-beta\b/i, mode: RELATIONAL, selectors: selectorSets.block, vocabulary: ["Incoming", "Outgoing"], parse: parseGraph },
+  { id: "block", detect: /^block-beta\b/i, mode: RELATIONAL, selectors: selectorSets.block, vocabulary: ["Incoming", "Outgoing"], parse: parseBlock },
   { id: "sequence", detect: /^sequenceDiagram\b/i, mode: RELATIONAL, selectors: selectorSets.sequence, vocabulary: ["Receives from", "Sends to"], parse: (rows) => parseSequence(rows) },
   { id: "zenuml", detect: /^zenuml\b/i, mode: RELATIONAL, selectors: selectorSets.zenuml, vocabulary: ["Receives from", "Sends to"], parse: (rows) => parseSequence(rows, true) },
   { id: "class", detect: /^classDiagram\b/i, mode: RELATIONAL, selectors: selectorSets.class, vocabulary: ["Referenced by", "References"], parse: parseClass },
-  { id: "state", detect: /^stateDiagram(?:-v2)?\b/i, mode: RELATIONAL, selectors: selectorSets.state, vocabulary: ["Previous states", "Next states"], parse: parseGraph },
+  { id: "state", detect: /^stateDiagram(?:-v2)?\b/i, mode: RELATIONAL, selectors: selectorSets.state, vocabulary: ["Previous states", "Next states"], parse: parseState },
   { id: "er", detect: /^erDiagram\b/i, mode: RELATIONAL, selectors: selectorSets.er, vocabulary: ["Related from", "Related to"], parse: parseER },
   { id: "architecture", detect: /^architecture-beta\b/i, mode: RELATIONAL, selectors: selectorSets.architecture, vocabulary: ["Upstream", "Downstream"], parse: parseArchitecture },
   { id: "swimlane", detect: /^swimlane(?:-beta)?\b/i, mode: RELATIONAL, selectors: selectorSets.graph, vocabulary: ["Previous steps", "Next steps"], parse: parseGraph },
   { id: "requirement", detect: /^requirementDiagram\b/i, mode: RELATIONAL, selectors: selectorSets.requirement, vocabulary: ["Related from", "Related to"], parse: parseRequirement },
   { id: "sankey", detect: /^sankey-beta\b/i, mode: RELATIONAL, selectors: selectorSets.sankey, vocabulary: ["Inputs", "Outputs"], parse: parseSankey },
-  { id: "mindmap", detect: /^mindmap\b/i, mode: RELATIONAL, selectors: selectorSets.mindmap, vocabulary: ["Parent", "Children"], parse: (rows) => parseIndented(rows, /^mindmap$/i, (text) => text.replace(/^\w+\(\((.*)\)\)$/, "$1").replace(/^[-+]\s*/, "")) },
+  { id: "mindmap", detect: /^mindmap\b/i, mode: RELATIONAL, selectors: selectorSets.mindmap, vocabulary: ["Parent", "Children"], parse: parseMindmap },
   { id: "treeView", detect: /^treeView-beta\b/i, mode: RELATIONAL, selectors: selectorSets.treeView, vocabulary: ["Parent", "Children"], parse: parseTreeView },
   { id: "treemap", detect: /^treemap-beta\b/i, mode: RELATIONAL, selectors: selectorSets.treemap, vocabulary: ["Parent", "Children"], parse: (rows) => parseIndented(rows, /^treemap-beta$/i, (text) => text.replace(/^"|"(?:\s*:\s*\d+)?$/g, "")) },
   { id: "ishikawa", detect: /^ishikawa-beta\b/i, mode: RELATIONAL, selectors: selectorSets.ishikawa, vocabulary: ["Effect", "Causes"], parse: (rows) => parseIndented(rows, /^ishikawa-beta$/i) },
@@ -357,8 +597,8 @@ const adapters = [
   { id: "gantt", detect: /^gantt\b/i, mode: RELATIONAL, selectors: selectorSets.gantt, vocabulary: ["Depends on", "Unblocks"], parse: parseGantt },
   { id: "kanban", detect: /^kanban\b/i, mode: ORDERED, selectors: selectorSets.kanban, parse: parseKanban },
   { id: "eventmodeling", detect: /^eventModeling\b/i, mode: ORDERED, selectors: selectorSets.eventmodeling, parse: parseEventModeling },
-  { id: "timeline", detect: /^timeline\b/i, mode: ORDERED, selectors: selectorSets.timeline, parse: (rows) => parseOrdered(rows, /^timeline$/i) },
-  { id: "gitGraph", detect: /^gitGraph\b/i, mode: ORDERED, selectors: selectorSets.git, parse: parseGit },
+  { id: "timeline", detect: /^timeline\b/i, mode: RELATIONAL, selectors: selectorSets.timeline, vocabulary: ["Period", "Events"], parse: parseTimeline },
+  { id: "gitGraph", detect: /^gitGraph\b/i, mode: RELATIONAL, selectors: selectorSets.git, vocabulary: ["Parents", "Children"], parse: parseGit },
   { id: "journey", detect: /^journey\b/i, mode: ORDERED, selectors: selectorSets.journey, parse: (rows) => parseOrdered(rows, /^journey$/i) },
   { id: "packet", detect: /^packet-beta\b/i, mode: ORDERED, selectors: selectorSets.packet, parse: parsePacket },
   { id: "railroad", detect: /^(?:railroad|ebnf|abnf|peg)\b/i, mode: ORDERED, selectors: selectorSets.railroad, parse: parseRailroad },
@@ -408,6 +648,7 @@ export function analyzeDiagram(source) {
     vocabulary: { incoming: adapter.vocabulary?.[0] || "Incoming", outgoing: adapter.vocabulary?.[1] || "Outgoing" },
     items: [...parsed.items.values()],
     relations: parsed.relations,
+    groups: parsed.groups || [],
   };
 }
 
@@ -443,7 +684,12 @@ function textValues(element, selector) {
 }
 
 function rawRendererKey(element, fallback) {
-  return element?.dataset?.id || element?.getAttribute?.("name") || element?.id || fallback;
+  if (element?.dataset?.id) return element.dataset.id;
+  if (element?.getAttribute?.("name")) return element.getAttribute("name");
+  const typedID = element?.id?.match(/-(?:flowchart|classId|state|entity)-(.+?)-\d+$/)?.[1];
+  if (typedID) return typedID;
+  const serviceID = element?.id?.match(/-service-(.+)$/)?.[1];
+  return serviceID || element?.id || fallback;
 }
 
 function directPaintParts(element, containers = "") {
@@ -458,10 +704,9 @@ function directPaintParts(element, containers = "") {
 }
 
 function markerParts(svg, element) {
-  const ids = ["marker-start", "marker-end"]
-    .map((attribute) => element.getAttribute(attribute)?.match(/#([^)]*)/)?.[1])
-    .filter(Boolean);
-  return elementsFor(svg, "marker").filter((marker) => ids.includes(marker.id));
+  // URL markers live in <defs> and are commonly shared by many edges. Their
+  // paint is handled per referencing path by the controller's marker clones.
+  return [];
 }
 
 function exactSemanticItem(analysis, candidates, usedKeys = new Set()) {
@@ -503,19 +748,26 @@ function containingGroup(element, byElement) {
   return undefined;
 }
 
-function addTargets(targets, analysis, candidates, usedKeys, groups) {
+function addTargets(targets, analysis, candidates, usedKeys, groups, { allowUnmatched = false } = {}) {
   candidates.forEach(({ element, rendererKey, labels, paintParts }) => {
     const item = exactSemanticItem(analysis, [rendererKey, ...labels], usedKeys);
-    if (!item) return;
-    usedKeys.add(item.key);
+    if (!item && !allowUnmatched) return;
+    const fallbackLabel = labels.find(Boolean) || rendererKey;
+    const key = item?.key || fallbackLabel;
+    if (!key || usedKeys.has(key)) return;
+    usedKeys.add(key);
     const target = {
-      rendererKey: rendererKey || item.key,
-      key: item.key,
-      label: item.label,
-      sourceLine: item.line,
+      rendererKey: rendererKey || key,
+      key,
+      label: item?.label || fallbackLabel,
+      sourceLine: item?.line,
       element,
       paintParts: [...new Set(paintParts)].filter(Boolean),
     };
+    if (item?.groupKey) {
+      target.groupKey = item.groupKey;
+      target.groupLabel = item.groupLabel;
+    }
     const group = containingGroup(element, groups.byElement);
     if (group) {
       target.groupKey = group.key;
@@ -543,6 +795,7 @@ function semanticEdges(analysis, targets) {
   return analysis.relations
     .filter(({ from, to }) => targetKeys.has(from) && targetKeys.has(to))
     .map((relation, index) => ({
+      ...relation,
       id: `semantic:${relation.line}:${relation.from}:${relation.to}:${index}`,
       from: relation.from,
       to: relation.to,
@@ -632,14 +885,14 @@ function applySemanticGroups(targets, analysis, groupTargets, groups) {
 function extractFlowchart(svg, analysis, id) {
   const groups = groupData(svg, "g.cluster", ".cluster-label, .nodeLabel", `${id}-group`);
   const targets = [];
-  addTargets(targets, analysis, nodeCandidates(svg, "g.node", ".nodeLabel, .label", id), new Set(), groups);
+  addTargets(targets, analysis, nodeCandidates(svg, "g.node", ".nodeLabel, .label", id), new Set(), groups, { allowUnmatched: id !== "block" });
   const edges = semanticEdges(analysis, targets);
   elementsFor(svg, "path.flowchart-link[data-id]").forEach((path) => {
     const relation = relationForFlowID(analysis, path.dataset.id)
       || (id === "block" ? relationForBlockID(analysis, path.dataset.id) : undefined);
     if (relation) replaceSemanticEdge(edges, relation.from, relation.to, visualEdge(svg, path, relation));
   });
-  return { targets, edges, groups: groups.groups };
+  return { targets, edges, groups: [...groups.groups, ...(analysis.groups || [])] };
 }
 
 function extractSequence(svg, analysis) {
@@ -647,7 +900,7 @@ function extractSequence(svg, analysis) {
   const targets = [];
   addTargets(targets, analysis, nodeCandidates(
     svg,
-    'g[data-et="participant"], g.actor',
+    'g[data-et="participant"][data-id], g.actor[data-id]',
     ".actor, text",
     "sequence",
     "",
@@ -655,11 +908,17 @@ function extractSequence(svg, analysis) {
   const edges = semanticEdges(analysis, targets);
   const messages = elementsFor(svg, '[data-et="message"][data-from][data-to]');
   const labels = elementsFor(svg, "text.messageText");
+  const numbers = elementsFor(svg, "text.sequenceNumber");
   messages.forEach((message, index) => {
     const from = targetByRendererKey(targets, message.dataset.from);
     const to = targetByRendererKey(targets, message.dataset.to);
     if (!from || !to) return;
-    replaceSemanticEdge(edges, from.key, to.key, visualEdge(svg, message, { from: from.key, to: to.key }, labels[index] ? [labels[index]] : []));
+    replaceSemanticEdge(edges, from.key, to.key, visualEdge(
+      svg,
+      message,
+      { from: from.key, to: to.key },
+      [labels[index], numbers[index]].filter(Boolean),
+    ));
   });
   return { targets, edges, groups: [] };
 }
@@ -669,11 +928,14 @@ function extractZenUML(svg, analysis) {
   const targets = [];
   addTargets(targets, analysis, nodeCandidates(
     svg,
-    "g.participant:not(.participant-starter)",
+    'g.participant[data-participant]:not([data-participant="_STARTER_"])',
     ".participant-label",
     "zenuml",
     ".participant-box",
-  ), new Set(), groups);
+  ).map((candidate) => ({
+    ...candidate,
+    rendererKey: candidate.element.dataset.participant || candidate.rendererKey,
+  })), new Set(), groups, { allowUnmatched: true });
   // Mermaid's ZenUML messages do not carry source/target attributes, so their
   // semantic relations intentionally remain unpainted.
   return { targets, edges: semanticEdges(analysis, targets), groups: [] };
@@ -684,9 +946,18 @@ function extractClass(svg, analysis) {
   const targets = [];
   addTargets(targets, analysis, nodeCandidates(svg, "g.node", ".label-group, .nodeLabel", "class"), new Set(), groups);
   const edges = semanticEdges(analysis, targets);
+  const terminals = elementsFor(svg, "g.edgeTerminals");
   elementsFor(svg, "path.relation[data-id]").forEach((path) => {
     const relation = relationForClassID(analysis, path.dataset.id);
-    if (relation) replaceSemanticEdge(edges, relation.from, relation.to, visualEdge(svg, path, relation));
+    if (relation) replaceSemanticEdge(
+      edges,
+      relation.from,
+      relation.to,
+      visualEdge(svg, path, relation, [
+        ...edgeLabels(svg, path),
+        ...terminals.filter((terminal) => relation.cardinalities?.includes(textValue(terminal))),
+      ]),
+    );
   });
   return { targets, edges, groups: [] };
 }
@@ -700,8 +971,8 @@ function extractState(svg, analysis) {
     ".nodeLabel, .cluster-label",
     "state",
     ".label-container, .outer-path, .outer, .inner",
-  ), new Set(), groups);
-  return { targets, edges: semanticEdges(analysis, targets), groups: groups.groups };
+  ), new Set(), groups, { allowUnmatched: false });
+  return { targets, edges: semanticEdges(analysis, targets), groups: [...groups.groups, ...(analysis.groups || [])] };
 }
 
 function extractER(svg, analysis) {
@@ -746,7 +1017,7 @@ function extractArchitecture(svg, analysis) {
     edge.arrowParts = elementsFor(path.parentElement, "polygon.arrow");
     replaceSemanticEdge(edges, relation.from, relation.to, edge);
   });
-  return { targets, edges, groups: groups.groups };
+  return { targets, edges, groups: [...groups.groups, ...(analysis.groups || [])] };
 }
 
 function extractSankey(svg, analysis) {
@@ -774,7 +1045,12 @@ function extractMindmap(svg, analysis) {
     "mindmap",
     ".label-container, .node-bkg, .node-line-",
   ), new Set(), groups);
-  return { targets, edges: semanticEdges(analysis, targets), groups: [] };
+  const edges = semanticEdges(analysis, targets);
+  elementsFor(svg, 'path[data-et="edge"][data-id]').forEach((path) => {
+    const relation = analysis.relations.find(({ rendererEdgeId }) => rendererEdgeId === path.dataset.id);
+    if (relation) replaceSemanticEdge(edges, relation.from, relation.to, visualEdge(svg, path, relation));
+  });
+  return { targets, edges, groups: [] };
 }
 
 function extractTreeView(svg, analysis) {
@@ -848,7 +1124,7 @@ function extractGantt(svg, analysis) {
       paintParts: [element],
     };
   }), new Set(), groups);
-  return { targets, edges: semanticEdges(analysis, targets), groups: [] };
+  return { targets, edges: semanticEdges(analysis, targets), groups: analysis.groups || [] };
 }
 
 function extractKanban(svg, analysis) {
@@ -878,15 +1154,14 @@ function extractEventModeling(svg, analysis) {
 function extractTimeline(svg, analysis) {
   const groups = { groups: [], byElement: new Map() };
   const targets = [];
-  // A timeline renders each date, event and description as separate fragments.
-  // Only exact source items become targets; descriptions are never promoted.
-  addTargets(targets, analysis, elementsFor(svg, "g.timeline-node").map((element, index) => ({
+  // Timeline periods and their colon-delimited events are separate targets.
+  addTargets(targets, analysis, elementsFor(svg, "g.taskWrapper > g.timeline-node, g.eventWrapper > g.timeline-node").map((element, index) => ({
     element,
     rendererKey: `timeline:${index + 1}`,
     labels: [textValue(element)],
     paintParts: elementsFor(element, ":scope > g > circle, :scope > g > line, :scope > g > path, :scope > g > rect"),
   })), new Set(), groups);
-  return { targets, edges: [], groups: [] };
+  return { targets, edges: semanticEdges(analysis, targets), groups: analysis.groups || [] };
 }
 
 function extractGit(svg, analysis) {
@@ -898,7 +1173,7 @@ function extractGit(svg, analysis) {
     labels: [...element.classList].filter((name) => !/^(commit|commit-merge|commit\d+)$/.test(name)),
     paintParts: [element],
   })), new Set(), groups);
-  return { targets, edges: [], groups: [] };
+  return { targets, edges: semanticEdges(analysis, targets), groups: analysis.groups || [] };
 }
 
 function extractJourney(svg, analysis) {

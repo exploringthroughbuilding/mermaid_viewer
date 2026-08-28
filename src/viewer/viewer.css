@@ -258,44 +258,25 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .stage .atlas-node:hover { filter: brightness(.96) drop-shadow(0 2px 3px rgb(35 94 167 / 20%)); }
 .stage .atlas-node[tabindex="0"]:focus { outline: none; }
 .stage .atlas-node[tabindex="0"]:focus-visible { filter: brightness(.94); }
-.stage .atlas-node.atlas-selected rect,
-.stage .atlas-node.atlas-selected polygon,
-.stage .atlas-node.atlas-selected circle,
-.stage .atlas-node.atlas-selected path,
-.stage rect.atlas-node.atlas-selected,
-.stage circle.atlas-node.atlas-selected { stroke: var(--coral) !important; stroke-width: 4px !important; }
-.stage .atlas-node.atlas-parent rect,
-.stage .atlas-node.atlas-parent polygon,
-.stage .atlas-node.atlas-parent circle,
-.stage .atlas-node.atlas-parent path,
-.stage rect.atlas-node.atlas-parent,
-.stage circle.atlas-node.atlas-parent { stroke: #7655b5 !important; stroke-width: 3px !important; stroke-dasharray: 8 4; }
-.stage .atlas-node.atlas-child rect,
-.stage .atlas-node.atlas-child polygon,
-.stage .atlas-node.atlas-child circle,
-.stage .atlas-node.atlas-child path,
-.stage rect.atlas-node.atlas-child,
-.stage circle.atlas-node.atlas-child { stroke: #25866a !important; stroke-width: 3px !important; }
-.stage .atlas-node.atlas-bidirectional rect,
-.stage .atlas-node.atlas-bidirectional polygon,
-.stage .atlas-node.atlas-bidirectional circle,
-.stage .atlas-node.atlas-bidirectional path,
-.stage rect.atlas-node.atlas-bidirectional,
-.stage circle.atlas-node.atlas-bidirectional { stroke: #be7a21 !important; stroke-width: 4px !important; }
+.stage .atlas-paint-part,
+.stage .atlas-edge-part { transition: opacity 120ms ease, stroke 120ms ease, stroke-width 120ms ease, fill 120ms ease; }
+.stage .atlas-paint-part.atlas-selected { stroke: var(--coral) !important; stroke-width: 4px !important; }
+.stage .atlas-paint-part.atlas-parent { stroke: #7655b5 !important; stroke-width: 3px !important; stroke-dasharray: 8 4; }
+.stage .atlas-paint-part.atlas-child { stroke: #25866a !important; stroke-width: 3px !important; }
+.stage .atlas-paint-part.atlas-bidirectional { stroke: #be7a21 !important; stroke-width: 4px !important; }
+.stage text.atlas-paint-part.atlas-selected { fill: var(--coral) !important; }
+.stage text.atlas-paint-part.atlas-parent { fill: #7655b5 !important; }
+.stage text.atlas-paint-part.atlas-child { fill: #25866a !important; }
+.stage text.atlas-paint-part.atlas-bidirectional { fill: #be7a21 !important; }
 .stage .atlas-dimmed { opacity: .1 !important; }
-.stage path.atlas-incoming { stroke: #7655b5 !important; stroke-width: 3.5px !important; stroke-dasharray: 9 5; opacity: 1 !important; }
-.stage path.atlas-outgoing { stroke: #25866a !important; stroke-width: 3.5px !important; opacity: 1 !important; }
-.stage g.edgeLabel { transition: opacity 120ms ease; }
-.stage g.edgeLabel.atlas-incoming { color: #604294; opacity: 1 !important; }
-.stage g.edgeLabel.atlas-outgoing { color: #1d7058; opacity: 1 !important; }
-.stage g.edgeLabel.atlas-preview { color: #8b5715; opacity: 1 !important; }
-.stage .atlas-node.atlas-preview rect,
-.stage .atlas-node.atlas-preview polygon,
-.stage .atlas-node.atlas-preview circle,
-.stage .atlas-node.atlas-preview path,
-.stage rect.atlas-node.atlas-preview,
-.stage circle.atlas-node.atlas-preview { stroke: #c6872d !important; stroke-width: 5px !important; stroke-dasharray: 6 3; filter: drop-shadow(0 0 5px rgb(198 135 45 / 48%)); }
-.stage path.atlas-preview { stroke: #c6872d !important; stroke-width: 5px !important; opacity: 1 !important; }
+.stage .atlas-edge-part.atlas-incoming { stroke: #7655b5 !important; stroke-width: 3.5px !important; stroke-dasharray: 9 5; opacity: 1 !important; }
+.stage .atlas-edge-part.atlas-outgoing { stroke: #25866a !important; stroke-width: 3.5px !important; opacity: 1 !important; }
+.stage .atlas-edge-label { transition: opacity 120ms ease, color 120ms ease; }
+.stage .atlas-edge-label.atlas-incoming { color: #604294; opacity: 1 !important; }
+.stage .atlas-edge-label.atlas-outgoing { color: #1d7058; opacity: 1 !important; }
+.stage .atlas-edge-label.atlas-preview { color: #8b5715; opacity: 1 !important; }
+.stage .atlas-paint-part.atlas-preview,
+.stage .atlas-edge-part.atlas-preview { stroke: #c6872d !important; stroke-width: 5px !important; stroke-dasharray: 6 3; filter: drop-shadow(0 0 5px rgb(198 135 45 / 48%)); opacity: 1 !important; }
 
 .app-root[data-theme="dark"] {
   color-scheme: dark;

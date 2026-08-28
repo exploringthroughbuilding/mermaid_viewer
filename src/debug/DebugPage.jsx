@@ -53,6 +53,9 @@ function DiagramSpecimen({ fixture, onStatus }) {
             ? <div className="rendered-specimen" dangerouslySetInnerHTML={{ __html: result.svg }} />
             : <div className="render-placeholder">Waiting for renderer</div>}
       </div>
+      <a className="experiment-link" href={`/?fixture=${encodeURIComponent(fixture.id)}`} target="_blank" rel="noopener noreferrer">
+        Experiment in viewer
+      </a>
       <details>
         <summary>Source</summary>
         <pre><code>{fixture.source}</code></pre>

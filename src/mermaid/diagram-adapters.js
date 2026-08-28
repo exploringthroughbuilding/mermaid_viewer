@@ -6,14 +6,27 @@ const selectorSets = {
   graph: ["g.node"],
   sequence: ['g[data-et="participant"]', "g.actor"],
   zenuml: ["g.participant:not(.participant-starter)"],
-  architecture: ['g[id*="-service-"]', 'g[id*="-group-"]'],
+  architecture: ["g.architecture-service"],
+  block: ["g.node.flowchart-label"],
+  state: ["g.node:not(.statediagram-note)", "g.statediagram-state.statediagram-cluster"],
+  sankey: ["g.nodes > g.node"],
+  mindmap: ["g.node.mindmap-node"],
+  treeView: ["g.tree-view > g"],
+  treemap: ["g.treemapSection", "g.treemapNode.treemapLeafGroup"],
+  ishikawa: ["g.ishikawa-head-group", "g.ishikawa-label-group", "g.ishikawa-sub-group"],
+  wardley: ["g.wardley-node"],
   gantt: ["rect.task"],
+  kanban: ["g.items > g.node", "g.cluster"],
+  eventmodeling: ["g.em-box"],
   timeline: ["g.timeline-node"],
-  git: ["circle.commit"],
-  requirement: ["g.requirement", "g.element"],
-  kanban: ["g.kanban-item", "g.node"],
-  packet: ["g.packetBlock", "g.packet-field"],
-  tree: ["g.node"],
+  git: ["circle.commit:not(.commit-merge)"],
+  journey: ["rect.task"],
+  packet: ["rect.packetBlock"],
+  railroad: ["g.railroad-rule"],
+  requirement: ["g.node"],
+  er: ["g.node"],
+  class: ["g.node"],
+  c4: ["g.node.c4-shape"],
 };
 
 function normalize(value) {
@@ -64,7 +77,7 @@ function identifier(fragment) {
 }
 
 function displayLabel(fragment, fallback) {
-  return fragment.match(/[\[(]{1,2}["']?([^\])"']+)["']?[\])]{1,2}/)?.[1]?.trim() || fallback;
+  return fragment.match(/[\[({]{1,2}["']?([^\])}"']+)["']?[\])}]{1,2}/)?.[1]?.trim() || fallback;
 }
 
 function parseGraph(rows) {
@@ -73,8 +86,24 @@ function parseGraph(rows) {
     if (!text || text.startsWith("%%") || /^(flowchart|graph|block-beta|columns|direction)\b/i.test(text)) return;
     const declaration = text.match(/^(?:class\s+)?([A-Za-z_][\w.-]*)\s*(?:\[|\(|\{|>|@\{)/);
     if (declaration) result.addItem(declaration[1], displayLabel(text.slice(declaration.index), declaration[1]), line);
+    // block diagrams may declare several labelled nodes on a single row.
+    for (const match of text.matchAll(/(?:^|\s)([A-Za-z_][\w.-]*)\s*(?:\[|\(|\{|>)/g)) {
+      const fragment = text.slice(match.index + match[0].indexOf(match[1]));
+      result.addItem(match[1], displayLabel(fragment, match[1]), line);
+    }
     const architecture = text.match(/^([A-Za-z_][\w.-]*):[LRBT]\s+[-=.]+>\s+[LRBT]:([A-Za-z_][\w.-]*)/);
     if (architecture) result.addRelation(architecture[1], architecture[2], line);
+    const dottedLabel = text.match(/^(.+?)\s*-\.\s*(.*?)\s*\.->\s*(.+)$/);
+    if (dottedLabel) {
+      const left = identifier(dottedLabel[1]);
+      const right = identifier(dottedLabel[3]);
+      if (left && right) {
+        result.addItem(left, displayLabel(dottedLabel[1], left), line);
+        result.addItem(right, displayLabel(dottedLabel[3], right), line);
+        result.addRelation(left, right, line, dottedLabel[2]);
+      }
+      return;
+    }
     const arrow = text.match(/^(.+?)\s*(<[-=.]+>|[-=.]+>|<[-=.]+|[-=.]+)\s*(.+?)(?:\s*:\s*(.*))?$/);
     if (!arrow) return;
     const left = identifier(arrow[1]);
@@ -160,7 +189,15 @@ function parseArchitecture(rows) {
   const result = parseGraph(rows);
   rows.forEach(({ text, line }) => {
     const item = text.match(/^(?:service|group|junction)\s+([\w-]+)(?:\([^)]*\))?\s*(?:\[([^\]]+)\])?/i);
-    if (item) result.addItem(item[1], item[2] || item[1], line);
+    if (item) {
+      const label = item[2] || item[1];
+      const semanticItem = result.addItem(item[1], label, line);
+      // The graph parser sees the icon name first; architecture renders [Label].
+      if (semanticItem) {
+        semanticItem.label = label;
+        semanticItem.aliases = [...new Set([...semanticItem.aliases, label])];
+      }
+    }
   });
   return result;
 }
@@ -196,11 +233,83 @@ function parseC4(rows) {
   rows.forEach(({ text, line }) => {
     const item = text.match(/^(?:Person|Person_Ext|System|System_Ext|SystemDb|SystemQueue|Container|ContainerDb|ContainerQueue|Component|ComponentDb|ComponentQueue|Deployment_Node)\s*\(\s*([\w.-]+)\s*,\s*["']([^"']+)["']/i);
     if (item) result.addItem(item[1], item[2], line);
-    const relation = text.match(/^(?:Rel|BiRel|Rel_U|Rel_D|Rel_L|Rel_R|Rel_Back|Rel_Neighbor)\s*\(\s*([\w.-]+)\s*,\s*([\w.-]+)/i);
+    const relation = text.match(/^(?:Rel|BiRel|Rel_U|Rel_D|Rel_L|Rel_R|Rel_Back|Rel_Neighbor)\s*\(\s*([\w.-]+)\s*,\s*([\w.-]+)/i)
+      || text.match(/^RelIndex\s*\(\s*\d+\s*,\s*([\w.-]+)\s*,\s*([\w.-]+)/i);
     if (relation) {
       result.addRelation(relation[1], relation[2], line);
       if (/^BiRel/i.test(text)) result.addRelation(relation[2], relation[1], line);
     }
+  });
+  return result;
+}
+
+function parseClass(rows) {
+  const result = parseGraph(rows);
+  rows.forEach(({ text, line }) => {
+    const relation = text.replace(/"[^"]*"/g, "").match(
+      /^([A-Za-z_][\w.-]*)\s+(?:<\|--|<\|\.\.|o--|\*--|--o|--\*|-->|<--|--\|>|<\.\.|--\.)\s+([A-Za-z_][\w.-]*)(?:\s*:\s*(.*))?$/,
+    );
+    if (relation) result.addRelation(relation[1], relation[2], line, relation[3]);
+  });
+  return result;
+}
+
+function parseKanban(rows) {
+  const result = parseGraph(rows);
+  const stack = [];
+  rows.forEach(({ text, line, indent }) => {
+    if (!text || /^kanban$/i.test(text)) return;
+    const item = text.match(/^([A-Za-z_][\w.-]*)\s*\[/);
+    if (!item) return;
+    while (stack.length && stack.at(-1).indent >= indent) stack.pop();
+    if (stack.length) result.addRelation(stack.at(-1).key, item[1], line);
+    stack.push({ key: item[1], indent });
+  });
+  return result;
+}
+
+function parseTreeView(rows) {
+  return parseIndented(rows, /^treeView-beta$/i, (text) => text
+    .replace(/\s+##.*$/, "")
+    .replace(/\/$/, ""));
+}
+
+function parsePacket(rows) {
+  const result = collection();
+  rows.forEach(({ text, line }, index) => {
+    if (!text || /^packet-beta$/i.test(text)) return;
+    const label = text.match(/:\s*["']([^"']+)["']/)?.[1];
+    if (label) result.addItem(`packet-${index}`, label, line);
+  });
+  return result;
+}
+
+function parseEventModeling(rows) {
+  const result = collection();
+  rows.forEach(({ text, line }, index) => {
+    const item = text.match(/^tf\s+\d+\s+(?:ui|cmd|evt|rmo)\s+([\w.-]+)/i);
+    if (!item) return;
+    result.addItem(`item-${index}`, item[1].split(".").at(-1), line, [item[1]]);
+  });
+  return result;
+}
+
+function parseRailroad(rows) {
+  const result = collection();
+  rows.forEach(({ text, line }, index) => {
+    const rule = text.match(/^([A-Za-z_][\w.-]*)\s*(?:=|<-)/);
+    if (rule) result.addItem(`rule-${index}`, rule[1], line, [rule[1]]);
+  });
+  return result;
+}
+
+function parseWardley(rows) {
+  const result = collection();
+  rows.forEach(({ text, line }) => {
+    const item = text.match(/^(?:anchor|component)\s+([^\s[(:]+)/i);
+    if (item) result.addItem(item[1], item[1], line);
+    const relation = text.match(/^([\w.-]+)\s*->\s*([\w.-]+)/);
+    if (relation) result.addRelation(relation[1], relation[2], line);
   });
   return result;
 }
@@ -230,36 +339,36 @@ function parseGit(rows) {
 
 const adapters = [
   { id: "flowchart", detect: /^(?:flowchart|graph)(?:-elk)?\b/i, mode: RELATIONAL, selectors: selectorSets.graph, vocabulary: ["Parents", "Children"], parse: parseGraph },
-  { id: "block", detect: /^block-beta\b/i, mode: RELATIONAL, selectors: selectorSets.graph, vocabulary: ["Incoming", "Outgoing"], parse: parseGraph },
+  { id: "block", detect: /^block-beta\b/i, mode: RELATIONAL, selectors: selectorSets.block, vocabulary: ["Incoming", "Outgoing"], parse: parseGraph },
   { id: "sequence", detect: /^sequenceDiagram\b/i, mode: RELATIONAL, selectors: selectorSets.sequence, vocabulary: ["Receives from", "Sends to"], parse: (rows) => parseSequence(rows) },
   { id: "zenuml", detect: /^zenuml\b/i, mode: RELATIONAL, selectors: selectorSets.zenuml, vocabulary: ["Receives from", "Sends to"], parse: (rows) => parseSequence(rows, true) },
-  { id: "class", detect: /^classDiagram\b/i, mode: RELATIONAL, selectors: selectorSets.graph, vocabulary: ["Referenced by", "References"], parse: parseGraph },
-  { id: "state", detect: /^stateDiagram(?:-v2)?\b/i, mode: RELATIONAL, selectors: selectorSets.graph, vocabulary: ["Previous states", "Next states"], parse: parseGraph },
-  { id: "er", detect: /^erDiagram\b/i, mode: RELATIONAL, selectors: selectorSets.graph, vocabulary: ["Related from", "Related to"], parse: parseER },
+  { id: "class", detect: /^classDiagram\b/i, mode: RELATIONAL, selectors: selectorSets.class, vocabulary: ["Referenced by", "References"], parse: parseClass },
+  { id: "state", detect: /^stateDiagram(?:-v2)?\b/i, mode: RELATIONAL, selectors: selectorSets.state, vocabulary: ["Previous states", "Next states"], parse: parseGraph },
+  { id: "er", detect: /^erDiagram\b/i, mode: RELATIONAL, selectors: selectorSets.er, vocabulary: ["Related from", "Related to"], parse: parseER },
   { id: "architecture", detect: /^architecture-beta\b/i, mode: RELATIONAL, selectors: selectorSets.architecture, vocabulary: ["Upstream", "Downstream"], parse: parseArchitecture },
   { id: "swimlane", detect: /^swimlane(?:-beta)?\b/i, mode: RELATIONAL, selectors: selectorSets.graph, vocabulary: ["Previous steps", "Next steps"], parse: parseGraph },
   { id: "requirement", detect: /^requirementDiagram\b/i, mode: RELATIONAL, selectors: selectorSets.requirement, vocabulary: ["Related from", "Related to"], parse: parseRequirement },
-  { id: "sankey", detect: /^sankey-beta\b/i, mode: RELATIONAL, selectors: selectorSets.graph, vocabulary: ["Inputs", "Outputs"], parse: parseSankey },
-  { id: "mindmap", detect: /^mindmap\b/i, mode: RELATIONAL, selectors: selectorSets.tree, vocabulary: ["Parent", "Children"], parse: (rows) => parseIndented(rows, /^mindmap$/i, (text) => text.replace(/^\w+\(\((.*)\)\)$/, "$1").replace(/^[-+]\s*/, "")) },
-  { id: "treeView", detect: /^treeView-beta\b/i, mode: RELATIONAL, selectors: selectorSets.tree, vocabulary: ["Parent", "Children"], parse: (rows) => parseIndented(rows, /^treeView-beta$/i) },
-  { id: "treemap", detect: /^treemap-beta\b/i, mode: RELATIONAL, selectors: selectorSets.tree, vocabulary: ["Parent", "Children"], parse: (rows) => parseIndented(rows, /^treemap-beta$/i, (text) => text.replace(/^"|"(?:\s*:\s*\d+)?$/g, "")) },
-  { id: "ishikawa", detect: /^ishikawa-beta\b/i, mode: RELATIONAL, selectors: selectorSets.tree, vocabulary: ["Effect", "Causes"], parse: (rows) => parseIndented(rows, /^ishikawa-beta$/i) },
-  { id: "wardley", detect: /^wardley-beta\b/i, mode: RELATIONAL, selectors: selectorSets.graph, vocabulary: ["Depends on", "Supports"], parse: parseGraph },
+  { id: "sankey", detect: /^sankey-beta\b/i, mode: RELATIONAL, selectors: selectorSets.sankey, vocabulary: ["Inputs", "Outputs"], parse: parseSankey },
+  { id: "mindmap", detect: /^mindmap\b/i, mode: RELATIONAL, selectors: selectorSets.mindmap, vocabulary: ["Parent", "Children"], parse: (rows) => parseIndented(rows, /^mindmap$/i, (text) => text.replace(/^\w+\(\((.*)\)\)$/, "$1").replace(/^[-+]\s*/, "")) },
+  { id: "treeView", detect: /^treeView-beta\b/i, mode: RELATIONAL, selectors: selectorSets.treeView, vocabulary: ["Parent", "Children"], parse: parseTreeView },
+  { id: "treemap", detect: /^treemap-beta\b/i, mode: RELATIONAL, selectors: selectorSets.treemap, vocabulary: ["Parent", "Children"], parse: (rows) => parseIndented(rows, /^treemap-beta$/i, (text) => text.replace(/^"|"(?:\s*:\s*\d+)?$/g, "")) },
+  { id: "ishikawa", detect: /^ishikawa-beta\b/i, mode: RELATIONAL, selectors: selectorSets.ishikawa, vocabulary: ["Effect", "Causes"], parse: (rows) => parseIndented(rows, /^ishikawa-beta$/i) },
+  { id: "wardley", detect: /^wardley-beta\b/i, mode: RELATIONAL, selectors: selectorSets.wardley, vocabulary: ["Depends on", "Supports"], parse: parseWardley },
   { id: "gantt", detect: /^gantt\b/i, mode: RELATIONAL, selectors: selectorSets.gantt, vocabulary: ["Depends on", "Unblocks"], parse: parseGantt },
-  { id: "kanban", detect: /^kanban\b/i, mode: ORDERED, selectors: selectorSets.kanban, parse: (rows) => parseIndented(rows, /^kanban$/i) },
-  { id: "eventmodeling", detect: /^eventModeling\b/i, mode: ORDERED, selectors: selectorSets.graph, parse: (rows) => parseOrdered(rows, /^eventModeling$/i) },
+  { id: "kanban", detect: /^kanban\b/i, mode: ORDERED, selectors: selectorSets.kanban, parse: parseKanban },
+  { id: "eventmodeling", detect: /^eventModeling\b/i, mode: ORDERED, selectors: selectorSets.eventmodeling, parse: parseEventModeling },
   { id: "timeline", detect: /^timeline\b/i, mode: ORDERED, selectors: selectorSets.timeline, parse: (rows) => parseOrdered(rows, /^timeline$/i) },
   { id: "gitGraph", detect: /^gitGraph\b/i, mode: ORDERED, selectors: selectorSets.git, parse: parseGit },
-  { id: "journey", detect: /^journey\b/i, mode: ORDERED, selectors: selectorSets.gantt, parse: (rows) => parseOrdered(rows, /^journey$/i) },
-  { id: "packet", detect: /^packet-beta\b/i, mode: ORDERED, selectors: selectorSets.packet, parse: (rows) => parseOrdered(rows, /^packet-beta$/i) },
-  { id: "railroad", detect: /^(?:railroad|ebnf|abnf|peg)\b/i, mode: ORDERED, selectors: selectorSets.graph, parse: (rows) => parseOrdered(rows, /^(?:railroad|ebnf|abnf|peg)\b/i) },
+  { id: "journey", detect: /^journey\b/i, mode: ORDERED, selectors: selectorSets.journey, parse: (rows) => parseOrdered(rows, /^journey$/i) },
+  { id: "packet", detect: /^packet-beta\b/i, mode: ORDERED, selectors: selectorSets.packet, parse: parsePacket },
+  { id: "railroad", detect: /^(?:railroad|ebnf|abnf|peg)\b/i, mode: ORDERED, selectors: selectorSets.railroad, parse: parseRailroad },
   { id: "pie", detect: /^pie\b/i, mode: CANVAS, selectors: [], parse: (rows) => parseOrdered(rows, /^pie\b/i) },
   { id: "quadrantChart", detect: /^quadrantChart\b/i, mode: CANVAS, selectors: [], parse: (rows) => parseOrdered(rows, /^quadrantChart$/i) },
   { id: "xychart", detect: /^xychart-beta\b/i, mode: CANVAS, selectors: [], parse: (rows) => parseOrdered(rows, /^xychart-beta$/i) },
   { id: "radar", detect: /^radar-beta\b/i, mode: CANVAS, selectors: [], parse: (rows) => parseOrdered(rows, /^radar-beta$/i) },
   { id: "venn", detect: /^venn-beta\b/i, mode: CANVAS, selectors: [], parse: (rows) => parseOrdered(rows, /^venn-beta$/i) },
   { id: "cynefin", detect: /^cynefin-beta\b/i, mode: CANVAS, selectors: [], parse: (rows) => parseOrdered(rows, /^cynefin-beta$/i) },
-  { id: "c4", detect: /^C4(?:Context|Container|Component|Dynamic|Deployment)\b/i, mode: RELATIONAL, selectors: selectorSets.graph, vocabulary: ["Referenced by", "References"], parse: parseC4 },
+  { id: "c4", detect: /^C4(?:Context|Container|Component|Dynamic|Deployment)\b/i, mode: RELATIONAL, selectors: selectorSets.c4, vocabulary: ["Referenced by", "References"], parse: parseC4 },
   { id: "info", detect: /^info\b/i, mode: CANVAS, selectors: [], parse: () => collection() },
 ];
 
@@ -317,6 +426,557 @@ export function matchSemanticItem(analysis, key, label, usedKeys = new Set()) {
     })
     .sort((a, b) => b.score - a.score || (a.item.line ?? Infinity) - (b.item.line ?? Infinity));
   return scored[0]?.score ? scored[0].item : undefined;
+}
+
+const PAINT_TAGS = new Set(["circle", "ellipse", "line", "path", "polygon", "polyline", "rect", "use"]);
+
+function elementsFor(root, selector) {
+  return root ? [...root.querySelectorAll(selector)] : [];
+}
+
+function textValue(element) {
+  return String(element?.textContent || "").replace(/\s+/g, " ").trim();
+}
+
+function textValues(element, selector) {
+  return [...new Set(elementsFor(element, selector).map(textValue).filter(Boolean))];
+}
+
+function rawRendererKey(element, fallback) {
+  return element?.dataset?.id || element?.getAttribute?.("name") || element?.id || fallback;
+}
+
+function directPaintParts(element, containers = "") {
+  if (!element) return [];
+  const parts = [...element.children].filter((child) => PAINT_TAGS.has(child.localName));
+  if (containers) {
+    [...element.children].filter((child) => child.matches(containers)).forEach((container) => {
+      [...container.children].filter((child) => PAINT_TAGS.has(child.localName)).forEach((child) => parts.push(child));
+    });
+  }
+  return [...new Set(parts)];
+}
+
+function markerParts(svg, element) {
+  const ids = ["marker-start", "marker-end"]
+    .map((attribute) => element.getAttribute(attribute)?.match(/#([^)]*)/)?.[1])
+    .filter(Boolean);
+  return elementsFor(svg, "marker").filter((marker) => ids.includes(marker.id));
+}
+
+function exactSemanticItem(analysis, candidates, usedKeys = new Set()) {
+  const normalizedCandidates = candidates.map(normalize).filter(Boolean);
+  if (!normalizedCandidates.length) return undefined;
+  return analysis.items.find((item) => {
+    if (usedKeys.has(item.key)) return false;
+    return item.aliases.map(normalize).some((alias) => normalizedCandidates.includes(alias));
+  });
+}
+
+function groupData(svg, selector, labelSelector, prefix) {
+  const containers = elementsFor(svg, selector);
+  const byElement = new Map();
+  const counts = new Map();
+  const groups = containers.map((element, index) => {
+    const label = textValues(element, labelSelector)[0] || textValue(element) || `${prefix} ${index + 1}`;
+    const normalizedLabel = normalize(label) || `${index + 1}`;
+    const duplicate = counts.get(normalizedLabel) || 0;
+    counts.set(normalizedLabel, duplicate + 1);
+    const group = { key: `${prefix}:${normalizedLabel}${duplicate ? `:${duplicate + 1}` : ""}`, label };
+    byElement.set(element, group);
+    return group;
+  });
+  containers.forEach((element) => {
+    let parent = element.parentElement;
+    while (parent && !byElement.has(parent)) parent = parent.parentElement;
+    if (parent) byElement.get(element).parentKey = byElement.get(parent).key;
+  });
+  return { groups, byElement };
+}
+
+function containingGroup(element, byElement) {
+  let parent = element?.parentElement;
+  while (parent) {
+    if (byElement.has(parent)) return byElement.get(parent);
+    parent = parent.parentElement;
+  }
+  return undefined;
+}
+
+function addTargets(targets, analysis, candidates, usedKeys, groups) {
+  candidates.forEach(({ element, rendererKey, labels, paintParts }) => {
+    const item = exactSemanticItem(analysis, [rendererKey, ...labels], usedKeys);
+    if (!item) return;
+    usedKeys.add(item.key);
+    const target = {
+      rendererKey: rendererKey || item.key,
+      key: item.key,
+      label: item.label,
+      sourceLine: item.line,
+      element,
+      paintParts: [...new Set(paintParts)].filter(Boolean),
+    };
+    const group = containingGroup(element, groups.byElement);
+    if (group) {
+      target.groupKey = group.key;
+      target.groupLabel = group.label;
+    }
+    targets.push(target);
+  });
+}
+
+function nodeCandidates(svg, selector, labelSelector, prefix, containers = ".label-container, .outer-path") {
+  return elementsFor(svg, selector).map((element, index) => ({
+    element,
+    rendererKey: rawRendererKey(element, `${prefix}:${index + 1}`),
+    labels: textValues(element, labelSelector),
+    paintParts: directPaintParts(element, containers),
+  }));
+}
+
+function textSibling(svg, element, suffix, selector) {
+  return elementsFor(svg, selector).find((candidate) => candidate.id === `${element.id}${suffix}`);
+}
+
+function semanticEdges(analysis, targets) {
+  const targetKeys = new Set(targets.map(({ key }) => key));
+  return analysis.relations
+    .filter(({ from, to }) => targetKeys.has(from) && targetKeys.has(to))
+    .map((relation, index) => ({
+      id: `semantic:${relation.line}:${relation.from}:${relation.to}:${index}`,
+      from: relation.from,
+      to: relation.to,
+      pathParts: [],
+      arrowParts: [],
+      labelParts: [],
+    }));
+}
+
+function replaceSemanticEdge(edges, from, to, visual) {
+  const index = edges.findIndex((edge) => edge.from === from && edge.to === to && !edge.pathParts.length);
+  if (index < 0) return;
+  edges[index] = visual;
+}
+
+function relationForFlowID(analysis, dataID) {
+  return analysis.relations.find(({ from, to }) => dataID.startsWith(`L_${from}_${to}_`));
+}
+
+function relationForBlockID(analysis, dataID) {
+  return analysis.relations.find(({ from, to }) => dataID.endsWith(`-${from}-${to}`));
+}
+
+function relationForClassID(analysis, dataID) {
+  return analysis.relations.find(({ from, to }) => new RegExp(`^id_${escapeRegExp(from)}_${escapeRegExp(to)}_\\d+$`).test(dataID));
+}
+
+function relationForERID(analysis, dataID) {
+  return analysis.relations.find(({ from, to }) => new RegExp(
+    `^id_entity-${escapeRegExp(from)}-\\d+_entity-${escapeRegExp(to)}-\\d+_\\d+$`,
+  ).test(dataID));
+}
+
+function relationForRequirementID(analysis, dataID) {
+  return analysis.relations.find(({ from, to }) => dataID.startsWith(`${from}-${to}-`));
+}
+
+function relationForArchitectureID(analysis, id) {
+  return analysis.relations.find(({ from, to }) => new RegExp(
+    `(?:^|-)L_${escapeRegExp(from)}_${escapeRegExp(to)}_\\d+$`,
+  ).test(id));
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function edgeLabels(svg, edge) {
+  const id = edge.dataset?.id;
+  if (!id) return [];
+  return elementsFor(svg, "g.edgeLabel .label, g.edgeLabel, g.label[data-id]")
+    .filter((label) => label.dataset?.id === id);
+}
+
+function visualEdge(svg, path, relation, labelParts = edgeLabels(svg, path)) {
+  return {
+    id: path.dataset?.id || path.id,
+    from: relation.from,
+    to: relation.to,
+    pathParts: PAINT_TAGS.has(path.localName) ? [path] : directPaintParts(path),
+    arrowParts: markerParts(svg, path),
+    labelParts,
+  };
+}
+
+function targetByRendererKey(targets, rendererKey) {
+  const candidate = normalize(rendererKey);
+  return targets.find((target) => normalize(target.rendererKey) === candidate || normalize(target.key) === candidate);
+}
+
+function applySemanticGroups(targets, analysis, groupTargets, groups) {
+  const groupByKey = new Map(groupTargets.map((target) => {
+    const group = groups.groups.find(({ label }) => normalize(label) === normalize(target.label));
+    return [target.key, group];
+  }));
+  targets.forEach((target) => {
+    if (target.groupKey) return;
+    const relation = analysis.relations.find(({ from, to }) => to === target.key && groupByKey.has(from));
+    const group = relation && groupByKey.get(relation.from);
+    if (group) {
+      target.groupKey = group.key;
+      target.groupLabel = group.label;
+    }
+  });
+}
+
+function extractFlowchart(svg, analysis, id) {
+  const groups = groupData(svg, "g.cluster", ".cluster-label, .nodeLabel", `${id}-group`);
+  const targets = [];
+  addTargets(targets, analysis, nodeCandidates(svg, "g.node", ".nodeLabel, .label", id), new Set(), groups);
+  const edges = semanticEdges(analysis, targets);
+  elementsFor(svg, "path.flowchart-link[data-id]").forEach((path) => {
+    const relation = relationForFlowID(analysis, path.dataset.id)
+      || (id === "block" ? relationForBlockID(analysis, path.dataset.id) : undefined);
+    if (relation) replaceSemanticEdge(edges, relation.from, relation.to, visualEdge(svg, path, relation));
+  });
+  return { targets, edges, groups: groups.groups };
+}
+
+function extractSequence(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const targets = [];
+  addTargets(targets, analysis, nodeCandidates(
+    svg,
+    'g[data-et="participant"], g.actor',
+    ".actor, text",
+    "sequence",
+    "",
+  ), new Set(), groups);
+  const edges = semanticEdges(analysis, targets);
+  const messages = elementsFor(svg, '[data-et="message"][data-from][data-to]');
+  const labels = elementsFor(svg, "text.messageText");
+  messages.forEach((message, index) => {
+    const from = targetByRendererKey(targets, message.dataset.from);
+    const to = targetByRendererKey(targets, message.dataset.to);
+    if (!from || !to) return;
+    replaceSemanticEdge(edges, from.key, to.key, visualEdge(svg, message, { from: from.key, to: to.key }, labels[index] ? [labels[index]] : []));
+  });
+  return { targets, edges, groups: [] };
+}
+
+function extractZenUML(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const targets = [];
+  addTargets(targets, analysis, nodeCandidates(
+    svg,
+    "g.participant:not(.participant-starter)",
+    ".participant-label",
+    "zenuml",
+    ".participant-box",
+  ), new Set(), groups);
+  // Mermaid's ZenUML messages do not carry source/target attributes, so their
+  // semantic relations intentionally remain unpainted.
+  return { targets, edges: semanticEdges(analysis, targets), groups: [] };
+}
+
+function extractClass(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const targets = [];
+  addTargets(targets, analysis, nodeCandidates(svg, "g.node", ".label-group, .nodeLabel", "class"), new Set(), groups);
+  const edges = semanticEdges(analysis, targets);
+  elementsFor(svg, "path.relation[data-id]").forEach((path) => {
+    const relation = relationForClassID(analysis, path.dataset.id);
+    if (relation) replaceSemanticEdge(edges, relation.from, relation.to, visualEdge(svg, path, relation));
+  });
+  return { targets, edges, groups: [] };
+}
+
+function extractState(svg, analysis) {
+  const groups = groupData(svg, "g.statediagram-state.statediagram-cluster", ".cluster-label", "state-group");
+  const targets = [];
+  addTargets(targets, analysis, nodeCandidates(
+    svg,
+    "g.node:not(.statediagram-note), g.statediagram-state.statediagram-cluster",
+    ".nodeLabel, .cluster-label",
+    "state",
+    ".label-container, .outer-path, .outer, .inner",
+  ), new Set(), groups);
+  return { targets, edges: semanticEdges(analysis, targets), groups: groups.groups };
+}
+
+function extractER(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const targets = [];
+  addTargets(targets, analysis, nodeCandidates(svg, "g.node", ".label.name", "er", ".outer-path, .row-rect-odd, .row-rect-even"), new Set(), groups);
+  const edges = semanticEdges(analysis, targets);
+  elementsFor(svg, "path.relationshipLine[data-id]").forEach((path) => {
+    const relation = relationForERID(analysis, path.dataset.id);
+    if (relation) replaceSemanticEdge(edges, relation.from, relation.to, visualEdge(svg, path, relation));
+  });
+  return { targets, edges, groups: [] };
+}
+
+function extractRequirement(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const targets = [];
+  addTargets(targets, analysis, nodeCandidates(svg, "g.node", "g.label", "requirement"), new Set(), groups);
+  const edges = semanticEdges(analysis, targets);
+  elementsFor(svg, "path.relationshipLine[data-id]").forEach((path) => {
+    const relation = relationForRequirementID(analysis, path.dataset.id);
+    if (relation) replaceSemanticEdge(edges, relation.from, relation.to, visualEdge(svg, path, relation));
+  });
+  return { targets, edges, groups: [] };
+}
+
+function extractArchitecture(svg, analysis) {
+  const groups = groupData(svg, "g.architecture-group", ".architecture-group-label, text", "architecture-group");
+  const targets = [];
+  addTargets(targets, analysis, elementsFor(svg, "g.architecture-service").map((element, index) => ({
+    element,
+    rendererKey: rawRendererKey(element, `architecture:${index + 1}`),
+    labels: textValues(element, ".text-inner-tspan"),
+    paintParts: elementsFor(element, ":scope svg rect, :scope svg circle, :scope svg ellipse, :scope svg line, :scope svg path, :scope svg polygon, :scope svg polyline")
+      .filter((part) => getComputedStyle(part).stroke !== "none" && getComputedStyle(part).strokeOpacity !== "0"),
+  })), new Set(), groups);
+  const edges = semanticEdges(analysis, targets);
+  elementsFor(svg, "g.architecture-edges path.edge").forEach((path) => {
+    const relation = relationForArchitectureID(analysis, path.id);
+    if (!relation) return;
+    const edge = visualEdge(svg, path, relation);
+    edge.arrowParts = elementsFor(path.parentElement, "polygon.arrow");
+    replaceSemanticEdge(edges, relation.from, relation.to, edge);
+  });
+  return { targets, edges, groups: groups.groups };
+}
+
+function extractSankey(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const labels = elementsFor(svg, "g.node-labels text");
+  const targets = [];
+  addTargets(targets, analysis, elementsFor(svg, "g.nodes > g.node").map((element, index) => ({
+    element,
+    rendererKey: rawRendererKey(element, `sankey:${index + 1}`),
+    labels: [String(labels[index]?.textContent || "").split(/\r?\n/)[0].trim()],
+    paintParts: directPaintParts(element),
+  })), new Set(), groups);
+  // Sankey links expose no endpoint metadata. Keep source relations available
+  // without guessing link order from layout output.
+  return { targets, edges: semanticEdges(analysis, targets), groups: [] };
+}
+
+function extractMindmap(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const targets = [];
+  addTargets(targets, analysis, nodeCandidates(
+    svg,
+    "g.node.mindmap-node",
+    ".nodeLabel, .label",
+    "mindmap",
+    ".label-container, .node-bkg, .node-line-",
+  ), new Set(), groups);
+  return { targets, edges: semanticEdges(analysis, targets), groups: [] };
+}
+
+function extractTreeView(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const targets = [];
+  addTargets(targets, analysis, elementsFor(svg, "text.treeView-node-label").map((label, index) => ({
+    element: label.parentElement?.localName === "g" ? label.parentElement : label,
+    rendererKey: `treeView:${index + 1}`,
+    labels: [textValue(label)],
+    paintParts: [label],
+  })), new Set(), groups);
+  return { targets, edges: semanticEdges(analysis, targets), groups: [] };
+}
+
+function extractTreemap(svg, analysis) {
+  const groups = groupData(svg, "g.treemapSection", "text.treemapSectionLabel", "treemap-group");
+  const targets = [];
+  const used = new Set();
+  const sectionTargets = [];
+  addTargets(sectionTargets, analysis, elementsFor(svg, "g.treemapSection").map((element, index) => ({
+    element,
+    rendererKey: `treemap-section:${index + 1}`,
+    labels: textValues(element, "text.treemapSectionLabel"),
+    paintParts: directPaintParts(element),
+  })), used, groups);
+  targets.push(...sectionTargets);
+  addTargets(targets, analysis, elementsFor(svg, "g.treemapNode.treemapLeafGroup").map((element, index) => ({
+    element,
+    rendererKey: `treemap-leaf:${index + 1}`,
+    labels: textValues(element, "text.treemapLabel"),
+    paintParts: directPaintParts(element),
+  })), used, groups);
+  applySemanticGroups(targets, analysis, sectionTargets, groups);
+  return { targets, edges: semanticEdges(analysis, targets), groups: groups.groups };
+}
+
+function extractIshikawa(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const targets = [];
+  const used = new Set();
+  addTargets(targets, analysis, nodeCandidates(svg, "g.ishikawa-head-group", ".ishikawa-head-label", "ishikawa-head", ".ishikawa-head"), used, groups);
+  addTargets(targets, analysis, nodeCandidates(svg, "g.ishikawa-label-group", ".ishikawa-label.cause", "ishikawa-label", ".ishikawa-label-box"), used, groups);
+  addTargets(targets, analysis, nodeCandidates(svg, "g.ishikawa-sub-group", ".ishikawa-label.align", "ishikawa-sub", ".ishikawa-sub-branch"), used, groups);
+  return { targets, edges: semanticEdges(analysis, targets), groups: [] };
+}
+
+function extractWardley(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const targets = [];
+  addTargets(targets, analysis, elementsFor(svg, "g.wardley-node").map((element, index) => {
+    const paintParts = directPaintParts(element);
+    return {
+      element,
+      rendererKey: rawRendererKey(element, `wardley:${index + 1}`),
+      labels: textValues(element, ".wardley-node-label"),
+      paintParts: paintParts.length ? paintParts : elementsFor(element, ".wardley-node-label"),
+    };
+  }), new Set(), groups);
+  return { targets, edges: semanticEdges(analysis, targets), groups: [] };
+}
+
+function extractGantt(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const targets = [];
+  addTargets(targets, analysis, elementsFor(svg, "rect.task").map((element, index) => {
+    const label = textSibling(svg, element, "-text", "text.taskText, text.taskTextOutsideLeft, text.taskTextOutsideRight");
+    return {
+      element,
+      rendererKey: rawRendererKey(element, `gantt:${index + 1}`),
+      labels: [textValue(label)],
+      paintParts: [element],
+    };
+  }), new Set(), groups);
+  return { targets, edges: semanticEdges(analysis, targets), groups: [] };
+}
+
+function extractKanban(svg, analysis) {
+  const groups = groupData(svg, "g.cluster", ".cluster-label", "kanban-group");
+  const targets = [];
+  const used = new Set();
+  const groupTargets = [];
+  addTargets(groupTargets, analysis, nodeCandidates(svg, "g.cluster", ".cluster-label", "kanban-cluster"), used, groups);
+  targets.push(...groupTargets);
+  addTargets(targets, analysis, nodeCandidates(svg, "g.items > g.node", ".nodeLabel, .label", "kanban"), used, groups);
+  applySemanticGroups(targets, analysis, groupTargets, groups);
+  return { targets, edges: semanticEdges(analysis, targets), groups: groups.groups };
+}
+
+function extractEventModeling(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const targets = [];
+  addTargets(targets, analysis, elementsFor(svg, "g.em-box").map((element, index) => ({
+    element,
+    rendererKey: `eventModeling:${index + 1}`,
+    labels: textValues(element, "foreignObject b"),
+    paintParts: directPaintParts(element),
+  })), new Set(), groups);
+  return { targets, edges: [], groups: [] };
+}
+
+function extractTimeline(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const targets = [];
+  // A timeline renders each date, event and description as separate fragments.
+  // Only exact source items become targets; descriptions are never promoted.
+  addTargets(targets, analysis, elementsFor(svg, "g.timeline-node").map((element, index) => ({
+    element,
+    rendererKey: `timeline:${index + 1}`,
+    labels: [textValue(element)],
+    paintParts: elementsFor(element, ":scope > g > circle, :scope > g > line, :scope > g > path, :scope > g > rect"),
+  })), new Set(), groups);
+  return { targets, edges: [], groups: [] };
+}
+
+function extractGit(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const targets = [];
+  addTargets(targets, analysis, elementsFor(svg, "circle.commit:not(.commit-merge)").map((element, index) => ({
+    element,
+    rendererKey: rawRendererKey(element, `git:${index + 1}`),
+    labels: [...element.classList].filter((name) => !/^(commit|commit-merge|commit\d+)$/.test(name)),
+    paintParts: [element],
+  })), new Set(), groups);
+  return { targets, edges: [], groups: [] };
+}
+
+function extractJourney(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const labels = elementsFor(svg, "text.task");
+  const targets = [];
+  addTargets(targets, analysis, elementsFor(svg, "rect.task").map((element, index) => ({
+    element,
+    rendererKey: `journey:${index + 1}`,
+    labels: [textValue(labels[index])],
+    paintParts: [element],
+  })), new Set(), groups);
+  return { targets, edges: [], groups: [] };
+}
+
+function extractPacket(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const labels = elementsFor(svg, "text.packetLabel");
+  const targets = [];
+  addTargets(targets, analysis, elementsFor(svg, "rect.packetBlock").map((element, index) => ({
+    element,
+    rendererKey: `packet:${index + 1}`,
+    labels: [textValue(labels[index])],
+    paintParts: [element],
+  })), new Set(), groups);
+  return { targets, edges: [], groups: [] };
+}
+
+function extractRailroad(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const targets = [];
+  addTargets(targets, analysis, elementsFor(svg, "g.railroad-rule").map((element, index) => ({
+    element,
+    rendererKey: `railroad:${index + 1}`,
+    labels: textValues(element, "g.railroad-rule-name-group text").map((label) => label.replace(/\s*(?:=|<-)\s*$/, "")),
+    paintParts: directPaintParts(element),
+  })), new Set(), groups);
+  return { targets, edges: [], groups: [] };
+}
+
+function extractC4(svg, analysis) {
+  const groups = { groups: [], byElement: new Map() };
+  const targets = [];
+  addTargets(targets, analysis, nodeCandidates(svg, "g.node.c4-shape", ".c4-name", "c4"), new Set(), groups);
+  return { targets, edges: semanticEdges(analysis, targets), groups: [] };
+}
+
+const svgExtractors = {
+  flowchart: (svg, analysis) => extractFlowchart(svg, analysis, "flowchart"),
+  swimlane: (svg, analysis) => extractFlowchart(svg, analysis, "swimlane"),
+  block: (svg, analysis) => extractFlowchart(svg, analysis, "block"),
+  sequence: extractSequence,
+  zenuml: extractZenUML,
+  class: extractClass,
+  state: extractState,
+  er: extractER,
+  requirement: extractRequirement,
+  architecture: extractArchitecture,
+  sankey: extractSankey,
+  mindmap: extractMindmap,
+  treeView: extractTreeView,
+  treemap: extractTreemap,
+  ishikawa: extractIshikawa,
+  wardley: extractWardley,
+  gantt: extractGantt,
+  kanban: extractKanban,
+  eventmodeling: extractEventModeling,
+  timeline: extractTimeline,
+  gitGraph: extractGit,
+  journey: extractJourney,
+  packet: extractPacket,
+  railroad: extractRailroad,
+  c4: extractC4,
+};
+
+export function extractDiagramInteraction(svg, analysis) {
+  if (!svg || analysis?.mode === CANVAS) return { targets: [], edges: [], groups: [] };
+  return svgExtractors[analysis?.id]?.(svg, analysis) || { targets: [], edges: [], groups: [] };
 }
 
 export const supportedDiagramAdapters = adapters.map(({ id, mode }) => ({ id, mode }));

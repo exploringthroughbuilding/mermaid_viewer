@@ -1,8 +1,9 @@
-import { analyzeDiagram, matchSemanticItem } from "../mermaid/diagram-adapters.js";
+import { analyzeDiagram, extractDiagramInteraction } from "../mermaid/diagram-adapters.js";
 import { fixtureById, viewerFixtures } from "../fixtures/diagram-fixtures.js";
 import { configureMermaid, parseMermaid, renderMermaid } from "../mermaid/runtime.js";
 
-const sample = fixtureById("flowchart-core").source;
+const requestedFixture = fixtureById(new URLSearchParams(window.location.search).get("fixture"));
+const sample = requestedFixture?.source || fixtureById("flowchart-core").source;
 const examples = Object.fromEntries(viewerFixtures.map((entry) => [entry.id, { label: `${entry.family} · ${entry.title}`, source: entry.source }]));
 
 const elements = {
@@ -164,6 +165,98 @@ function initializeMermaid(theme) {
 
 initializeMermaid(document.querySelector(".app-root")?.dataset.theme);
 
+const darkCanvasColor = { red: 21, green: 27, blue: 35 };
+const darkDiagramTextColor = "#172033";
+const lightDiagramTextColor = "#e7edf6";
+
+function rgbColor(value) {
+  if (typeof value !== "string") return null;
+  const hex = value.match(/^#([\da-f]{3}|[\da-f]{6})$/i);
+  if (hex) {
+    const expanded = hex[1].length === 3 ? [...hex[1]].map((channel) => channel.repeat(2)).join("") : hex[1];
+    return {
+      red: Number.parseInt(expanded.slice(0, 2), 16),
+      green: Number.parseInt(expanded.slice(2, 4), 16),
+      blue: Number.parseInt(expanded.slice(4, 6), 16),
+      alpha: 1,
+    };
+  }
+  const match = value.match(/^rgba?\(([^)]+)\)$/);
+  if (!match) return null;
+  const [red, green, blue, alpha = "1"] = match[1].split(",").map((channel) => channel.trim());
+  const color = {
+    red: Number(red),
+    green: Number(green),
+    blue: Number(blue),
+    alpha: Number(alpha),
+  };
+  return Object.values(color).every(Number.isFinite) ? color : null;
+}
+
+function opaqueColor(color) {
+  if (!color || color.alpha <= 0) return null;
+  if (color.alpha >= 1) return color;
+  return {
+    red: color.red * color.alpha + darkCanvasColor.red * (1 - color.alpha),
+    green: color.green * color.alpha + darkCanvasColor.green * (1 - color.alpha),
+    blue: color.blue * color.alpha + darkCanvasColor.blue * (1 - color.alpha),
+    alpha: 1,
+  };
+}
+
+function luminance({ red, green, blue }) {
+  const channel = (value) => {
+    const normalized = value / 255;
+    return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue);
+}
+
+function contrastRatio(first, second) {
+  const [lighter, darker] = [luminance(first), luminance(second)].sort((a, b) => b - a);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function labelBackground(label, svg) {
+  for (let container = label.parentElement; container && container !== svg; container = container.parentElement) {
+    if (container.classList.contains("label")) continue;
+    const shape = [...container.children].find((child) => child.matches?.("rect, circle, ellipse, path, polygon"));
+    const color = opaqueColor(shape && rgbColor(getComputedStyle(shape).fill));
+    if (color) return color;
+  }
+  return null;
+}
+
+function labelColor(label) {
+  return label instanceof SVGForeignObjectElement
+    ? rgbColor(getComputedStyle(label).color)
+    : rgbColor(getComputedStyle(label).fill);
+}
+
+function setLabelColor(label, color) {
+  const elements = [label, ...label.querySelectorAll("*")];
+  elements.forEach((element) => {
+    element.style.setProperty("color", color, "important");
+    if (element instanceof SVGElement) element.style.setProperty("fill", color, "important");
+  });
+}
+
+function fixDarkDiagramTextContrast(svg) {
+  if (document.querySelector(".app-root")?.dataset.theme !== "dark") return;
+  const darkText = rgbColor(darkDiagramTextColor);
+  const lightText = rgbColor(lightDiagramTextColor);
+  svg.querySelectorAll("foreignObject, text").forEach((label) => {
+    if (!label.textContent.trim()) return;
+    const background = labelBackground(label, svg);
+    const currentText = labelColor(label);
+    if (!background || !currentText || contrastRatio(currentText, background) >= 4.5) return;
+    const preferredText = contrastRatio(darkText, background) >= contrastRatio(lightText, background)
+      ? darkDiagramTextColor
+      : lightDiagramTextColor;
+    setLabelColor(label, preferredText);
+  });
+}
+
 function setStatus(message, state = "idle") {
   elements.status.textContent = message;
   elements.statusDot.className = `status-dot ${state}`;
@@ -265,152 +358,105 @@ function updateSourceFromEditor() {
   updateSourceMeta();
 }
 
-function canonical(value) {
-  const flowchartMarker = "-flowchart-";
-  const markerIndex = value.indexOf(flowchartMarker);
-  const withoutRenderPrefix = markerIndex >= 0
-    ? value.slice(markerIndex + flowchartMarker.length)
-    : value.replace(/^flowchart-/, "");
-  return withoutRenderPrefix.replace(/-\d+$/, "");
+function interactionParts(parts) {
+  return [...new Set(parts.filter((part) => part?.classList))];
 }
 
-function nodeKey(node) {
-  if (node.dataset.id) return node.dataset.id;
-  if (node.getAttribute("name")) return node.getAttribute("name");
-  const typedID = node.id.match(/-(?:flowchart|classId|state|entity)-(.+?)-\d+$/)?.[1];
-  if (typedID) return typedID;
-  const serviceID = node.id.match(/-service-(.+)$/)?.[1];
-  if (serviceID) return serviceID;
-  return canonical(node.id.replace(/^atlas-\d+-/, ""));
+function nodeParts(node) {
+  return interactionParts([node.element, ...node.paintParts]);
 }
 
-function renderedNodes(svg) {
-  const selectors = diagramAnalysis.selectors.filter((selector) => svg.querySelector(selector));
-  if (selectors.length) return [...svg.querySelectorAll(selectors.join(", "))];
-  if (diagramAnalysis.mode === "canvas") return [];
-  const textGroups = [...svg.querySelectorAll("text, foreignObject")]
-    .map((element) => element.closest("g"))
-    .filter((element) => element && element.textContent.trim());
-  return [...new Set(textGroups)].map((element) => {
-    element.dataset.atlasSemanticCandidate = "true";
-    return element;
+function edgeParts(edge) {
+  return interactionParts([...edge.pathParts, ...edge.arrowParts, ...edge.labelParts]);
+}
+
+function setNodeRole(node, role) {
+  nodeParts(node).forEach((part) => {
+    part.classList.toggle("atlas-selected", role === "selected");
+    part.classList.toggle("atlas-parent", role === "parent");
+    part.classList.toggle("atlas-child", role === "child");
+    part.classList.toggle("atlas-bidirectional", role === "bidirectional");
+    part.classList.toggle("atlas-dimmed", role === "dimmed");
   });
 }
 
-function indexRenderedGraph() {
+function setNodePreview(node, preview) {
+  nodeParts(node).forEach((part) => part.classList.toggle("atlas-preview", preview));
+}
+
+function setEdgePreview(edge, preview) {
+  edgeParts(edge).forEach((part) => part.classList.toggle("atlas-preview", preview));
+}
+
+function indexDiagramInteraction() {
   const svg = elements.stage.querySelector("svg");
   const nodes = new Map();
-  const clusters = [...svg.querySelectorAll("g.cluster")]
-    .map((cluster, index) => {
+  const interaction = extractDiagramInteraction(svg, diagramAnalysis);
+  const groups = interaction.groups
+    .map((group) => {
+      const cluster = [...svg.querySelectorAll("g.cluster")].find((candidate) => (
+        candidate.querySelector(".cluster-label, .nodeLabel")?.textContent || ""
+      ).trim().replace(/\s+/g, " ") === group.label);
+      if (!cluster) return group;
       const bounds = cluster.getBoundingClientRect();
-      const label = (cluster.querySelector(".cluster-label")?.textContent || cluster.dataset.id || `Subgraph ${index + 1}`)
-        .trim()
-        .replace(/\s+/g, " ");
-      return {
-        key: cluster.dataset.id || cluster.id || `subgraph-${index}`,
-        label,
-        bounds,
-        area: bounds.width * bounds.height,
-      };
+      return { ...group, bounds, area: bounds.width * bounds.height };
     })
-    .sort((a, b) => a.area - b.area);
-  const gitLabels = elements.source.value.split("\n")
-    .map((line) => line.match(/^\s*commit(?:\s+id:\s*["']([^"']+)["'])?/i)?.[1])
-    .filter(Boolean);
+    .filter((group) => group.bounds)
+    .sort((first, second) => first.area - second.area);
 
-  const usedSemanticKeys = new Set();
-  renderedNodes(svg).forEach((node, index) => {
-    const rawKey = nodeKey(node);
-    const fallbackLabel = diagramKind === "gitGraph" && node.matches("circle.commit") ? gitLabels[index] : "";
-    const renderedLabel = (node.querySelector(".nodeLabel")?.textContent || node.textContent || "").trim().replace(/\s+/g, " ");
-    const label = renderedLabel || fallbackLabel || rawKey;
-    const semanticItem = matchSemanticItem(diagramAnalysis, rawKey, label, usedSemanticKeys);
-    if (node.dataset.atlasSemanticCandidate && !semanticItem) return;
-    if (semanticItem) usedSemanticKeys.add(semanticItem.key);
-    const resolvedKey = semanticItem?.key || rawKey || label || `item-${index + 1}`;
-    const bounds = node.getBoundingClientRect();
-    const centerX = bounds.left + bounds.width / 2;
-    const centerY = bounds.top + bounds.height / 2;
-    const cluster = clusters.find(({ bounds: clusterBounds }) => centerX >= clusterBounds.left && centerX <= clusterBounds.right
-      && centerY >= clusterBounds.top && centerY <= clusterBounds.bottom);
-    node.dataset.graphKey = resolvedKey;
-    if (semanticItem?.line != null) node.dataset.sourceLine = semanticItem.line;
-    node.classList.add("atlas-node");
-    node.setAttribute("tabindex", "0");
-    node.setAttribute("role", "button");
-    node.setAttribute("aria-label", `${label}. Select to show attached nodes.`);
-    nodes.set(resolvedKey, {
-      key: resolvedKey,
-      rawKey,
-      label: semanticItem?.label || label || resolvedKey,
-      sourceLine: semanticItem?.line,
-      semanticAliases: semanticItem?.aliases || [],
-      element: node,
-      groupKey: cluster?.key,
-      groupLabel: cluster?.label,
+  interaction.targets.forEach((target) => {
+    if (!target.element || nodes.has(target.key)) return;
+    const paintParts = interactionParts(target.paintParts);
+    const bounds = target.element.getBoundingClientRect();
+    const group = target.groupKey ? target : groups.find(({ bounds: groupBounds }) => (
+      bounds.left + bounds.width / 2 >= groupBounds.left
+      && bounds.left + bounds.width / 2 <= groupBounds.right
+      && bounds.top + bounds.height / 2 >= groupBounds.top
+      && bounds.top + bounds.height / 2 <= groupBounds.bottom
+    ));
+    target.element.dataset.graphKey = target.key;
+    if (target.sourceLine != null) target.element.dataset.sourceLine = target.sourceLine;
+    target.element.classList.add("atlas-node");
+    target.element.setAttribute("tabindex", "0");
+    target.element.setAttribute("role", "button");
+    target.element.setAttribute("aria-label", `${target.label}. Select to show attached nodes.`);
+    paintParts.forEach((part) => part.classList.add("atlas-paint-part"));
+    nodes.set(target.key, {
+      key: target.key,
+      rawKey: target.rendererKey,
+      label: target.label,
+      sourceLine: target.sourceLine,
+      element: target.element,
+      paintParts,
+      groupKey: target.groupKey || group?.key,
+      groupLabel: target.groupLabel || group?.label,
     });
   });
 
-  const resolveKey = (candidate) => {
-    if (nodes.has(candidate)) return candidate;
-    const normalized = canonical(candidate);
-    return [...nodes.values()].find((node) => canonical(node.rawKey || "") === normalized
-      || node.semanticAliases.some((alias) => alias.toLocaleLowerCase() === String(candidate).toLocaleLowerCase()))?.key || candidate;
-  };
-
-  const nodeKeysByLength = [...nodes.keys()].sort((a, b) => b.length - a.length);
-  const endpointsFromDataID = (path) => {
-    const dataID = path.dataset.id;
-    if (!dataID?.startsWith("L_")) return undefined;
-    const joinedEndpoints = dataID.replace(/^L_/, "").replace(/_\d+$/, "");
-    for (const from of nodeKeysByLength) {
-      if (!joinedEndpoints.startsWith(`${from}_`)) continue;
-      const to = joinedEndpoints.slice(from.length + 1);
-      if (nodes.has(to)) return { from, to };
-    }
-    return undefined;
-  };
-
-  let edges = [];
-  svg.querySelectorAll("path.flowchart-link, g.edgePath path").forEach((path) => {
-    const classes = [...path.classList];
-    const startClass = classes.find((name) => name.startsWith("LS-"));
-    const endClass = classes.find((name) => name.startsWith("LE-"));
-    const dataEndpoints = endpointsFromDataID(path);
-    const from = dataEndpoints?.from || (startClass ? resolveKey(startClass.slice(3)) : undefined);
-    const to = dataEndpoints?.to || (endClass ? resolveKey(endClass.slice(3)) : undefined);
-    if (!nodes.has(from) || !nodes.has(to)) return;
-    const visual = path.closest("g.edgePath") || path;
-    const label = path.dataset.id
-      ? svg.querySelector(`g.edgeLabel .label[data-id="${CSS.escape(path.dataset.id)}"]`)?.closest("g.edgeLabel")
-      : undefined;
-    edges.push({
-      from,
-      to,
-      path,
-      visual,
-      label,
-      originalMarkerStart: path.getAttribute("marker-start"),
-      originalMarkerEnd: path.getAttribute("marker-end"),
+  const edges = interaction.edges
+    .filter(({ from, to }) => nodes.has(from) && nodes.has(to))
+    .map((edge) => {
+      const pathParts = interactionParts(edge.pathParts);
+      const arrowParts = interactionParts(edge.arrowParts);
+      const labelParts = interactionParts(edge.labelParts.flatMap((part) => [part, part.closest?.("g.edgeLabel")]));
+      pathParts.forEach((part) => part.classList.add("atlas-edge-part"));
+      arrowParts.forEach((part) => part.classList.add("atlas-edge-part"));
+      labelParts.forEach((part) => part.classList.add("atlas-edge-label"));
+      return {
+        ...edge,
+        pathParts,
+        arrowParts,
+        labelParts,
+        markerPaths: pathParts
+          .filter((part) => part instanceof SVGPathElement)
+          .map((path) => ({
+            path,
+            originalMarkerStart: path.getAttribute("marker-start"),
+            originalMarkerEnd: path.getAttribute("marker-end"),
+          }))
+          .filter(({ originalMarkerStart, originalMarkerEnd }) => originalMarkerStart || originalMarkerEnd),
+      };
     });
-  });
-
-  const semanticRelations = diagramAnalysis.relations
-    .map(({ from, to }) => ({ from: resolveKey(from), to: resolveKey(to) }))
-    .filter(({ from, to }) => nodes.has(from) && nodes.has(to));
-  if (semanticRelations.length) {
-    const usedVisualEdges = new Set();
-    const semanticEdges = semanticRelations.map(({ from, to }) => {
-      const visualEdge = edges.find((edge) => !usedVisualEdges.has(edge)
-        && ((edge.from === from && edge.to === to) || (edge.from === to && edge.to === from)));
-      if (visualEdge) usedVisualEdges.add(visualEdge);
-      return { ...visualEdge, from, to };
-    });
-    const structuralEdges = edges.filter((edge) => !usedVisualEdges.has(edge)
-      && (nodes.get(edge.from)?.sourceLine == null || nodes.get(edge.to)?.sourceLine == null));
-    edges = [...semanticEdges, ...structuralEdges];
-  }
-  edges = edges.filter((edge, index) => edges.findIndex((candidate) => candidate.from === edge.from && candidate.to === edge.to) === index);
 
   const incoming = new Map([...nodes.keys()].map((key) => [key, new Set()]));
   const outgoing = new Map([...nodes.keys()].map((key) => [key, new Set()]));
@@ -543,19 +589,20 @@ function markerForRole(reference, role) {
   return `url(#${cloneID})`;
 }
 
-function setEdgeRole(edge, role) {
-  edge.path?.classList.toggle("atlas-incoming", role === "incoming");
-  edge.path?.classList.toggle("atlas-outgoing", role === "outgoing");
-  edge.path?.classList.toggle("atlas-dimmed", !role);
-  edge.label?.classList.toggle("atlas-incoming", role === "incoming");
-  edge.label?.classList.toggle("atlas-outgoing", role === "outgoing");
-  edge.label?.classList.toggle("atlas-dimmed", !role);
-  if (edge.path && edge.originalMarkerStart) {
-    edge.path.setAttribute("marker-start", role ? markerForRole(edge.originalMarkerStart, role) : edge.originalMarkerStart);
-  }
-  if (edge.path && edge.originalMarkerEnd) {
-    edge.path.setAttribute("marker-end", role ? markerForRole(edge.originalMarkerEnd, role) : edge.originalMarkerEnd);
-  }
+function setEdgeRole(edge, role, dimmed = Boolean(selectedKey)) {
+  edgeParts(edge).forEach((part) => {
+    part.classList.toggle("atlas-incoming", role === "incoming");
+    part.classList.toggle("atlas-outgoing", role === "outgoing");
+    part.classList.toggle("atlas-dimmed", !role && dimmed);
+  });
+  edge.markerPaths.forEach(({ path, originalMarkerStart, originalMarkerEnd }) => {
+    if (originalMarkerStart) {
+      path.setAttribute("marker-start", role ? markerForRole(originalMarkerStart, role) : originalMarkerStart);
+    }
+    if (originalMarkerEnd) {
+      path.setAttribute("marker-end", role ? markerForRole(originalMarkerEnd, role) : originalMarkerEnd);
+    }
+  });
 }
 
 function relationshipRows(keys, relationship) {
@@ -580,12 +627,19 @@ function selectNode(key) {
   const children = graph.outgoing.get(key) || new Set();
   const visible = new Set([key, ...parents, ...children]);
 
-  graph.nodes.forEach(({ element }, nodeKeyValue) => {
-    element.classList.toggle("atlas-selected", nodeKeyValue === key);
-    element.classList.toggle("atlas-parent", parents.has(nodeKeyValue) && !children.has(nodeKeyValue));
-    element.classList.toggle("atlas-child", children.has(nodeKeyValue) && !parents.has(nodeKeyValue));
-    element.classList.toggle("atlas-bidirectional", parents.has(nodeKeyValue) && children.has(nodeKeyValue));
-    element.classList.toggle("atlas-dimmed", !visible.has(nodeKeyValue));
+  graph.nodes.forEach((node, nodeKeyValue) => {
+    const role = nodeKeyValue === key
+      ? "selected"
+      : parents.has(nodeKeyValue) && children.has(nodeKeyValue)
+        ? "bidirectional"
+        : parents.has(nodeKeyValue)
+          ? "parent"
+          : children.has(nodeKeyValue)
+            ? "child"
+            : !visible.has(nodeKeyValue)
+              ? "dimmed"
+              : undefined;
+    setNodeRole(node, role);
   });
 
   graph.edges.forEach((edge) => {
@@ -621,10 +675,8 @@ function selectNode(key) {
 function clearSelection() {
   clearKeyboardPreview();
   selectedKey = null;
-  graph.edges.forEach((edge) => setEdgeRole(edge, undefined));
-  elements.stage.querySelectorAll(".atlas-selected, .atlas-parent, .atlas-child, .atlas-bidirectional, .atlas-dimmed, .atlas-incoming, .atlas-outgoing").forEach((element) => {
-    element.classList.remove("atlas-selected", "atlas-parent", "atlas-child", "atlas-bidirectional", "atlas-dimmed", "atlas-incoming", "atlas-outgoing");
-  });
+  graph.nodes.forEach((node) => setNodeRole(node));
+  graph.edges.forEach((edge) => setEdgeRole(edge));
   elements.selection.className = "empty-state";
   elements.selection.textContent = "Select any node to isolate its immediate connections.";
   elements.clearSelection.disabled = true;
@@ -688,7 +740,8 @@ function zoomToNode(key) {
 
 function clearKeyboardPreview() {
   keyboardNavigation = null;
-  elements.stage.querySelectorAll(".atlas-preview").forEach((element) => element.classList.remove("atlas-preview"));
+  graph.nodes.forEach((node) => setNodePreview(node, false));
+  graph.edges.forEach((edge) => setEdgePreview(edge, false));
   elements.selection.querySelectorAll(".keyboard-preview, .keyboard-browse-active").forEach((element) => {
     element.classList.remove("keyboard-preview", "keyboard-browse-active");
   });
@@ -720,18 +773,18 @@ function showNodesTogether(firstKey, secondKey) {
 }
 
 function showKeyboardPreview() {
-  elements.stage.querySelectorAll(".atlas-preview").forEach((element) => element.classList.remove("atlas-preview"));
+  graph.nodes.forEach((node) => setNodePreview(node, false));
+  graph.edges.forEach((edge) => setEdgePreview(edge, false));
   elements.selection.querySelectorAll(".keyboard-preview, .keyboard-browse-active").forEach((element) => {
     element.classList.remove("keyboard-preview", "keyboard-browse-active");
   });
   const key = keyboardNavigation?.candidates[keyboardNavigation.index];
   if (!key) return;
-  graph.nodes.get(key)?.element.classList.add("atlas-preview");
-  const previewEdge = graph.edges.find((edge) => keyboardNavigation.relationship === "parent"
+  const previewEdges = graph.edges.filter((edge) => keyboardNavigation.relationship === "parent"
     ? edge.from === key && edge.to === selectedKey
     : edge.from === selectedKey && edge.to === key);
-  previewEdge?.path?.classList.add("atlas-preview");
-  previewEdge?.label?.classList.add("atlas-preview");
+  setNodePreview(graph.nodes.get(key), true);
+  previewEdges.forEach((edge) => setEdgePreview(edge, true));
   const row = elements.selection.querySelector(`.relationship-row [data-node-key="${CSS.escape(key)}"]`)?.closest(".relationship-row");
   row?.classList.add("keyboard-preview");
   row?.closest(".relationship-group")?.classList.add("keyboard-browse-active");
@@ -810,8 +863,9 @@ async function renderDiagram(preserveView = false) {
     const viewBox = renderedSVG.viewBox.baseVal;
     renderedSVG.style.width = `${viewBox.width}px`;
     renderedSVG.style.height = `${viewBox.height}px`;
+    fixDarkDiagramTextContrast(renderedSVG);
     elements.canvasEmpty.hidden = true;
-    indexRenderedGraph();
+    indexDiagramInteraction();
     if (selectionToRestore) selectNode(selectionToRestore);
     if (shouldPreserveView) applyTransform();
     else {

@@ -37,6 +37,9 @@ body.debug-route #app { min-height: 100%; height: auto; overflow: visible; }
 .rendered-specimen svg { width: auto !important; max-width: 100%; height: auto !important; max-height: 460px; }
 .render-placeholder { place-self: center; color: #7b899a; font: 500 10px "IBM Plex Mono", monospace; text-transform: uppercase; }
 .render-error { margin: 0; padding: 20px; overflow: auto; color: #8f1e2b; background: #fff1f2; white-space: pre-wrap; font: 500 11px/1.5 "IBM Plex Mono", monospace; }
+.experiment-link { display: flex; align-items: center; justify-content: space-between; min-height: 40px; margin: 0 12px 12px; padding: 0 12px; border: 1px solid #2864a3; background: #e8f1fb; color: #164f8c; font: 600 10px/1 "IBM Plex Mono", monospace; letter-spacing: .04em; text-decoration: none; text-transform: uppercase; }
+.experiment-link:hover { background: #dbeafa; color: #123f70; }
+.experiment-link:focus-visible { outline: 2px solid #14223a; outline-offset: 2px; }
 .debug-card details { border-top: 1px solid #c5d1de; }
 .debug-card summary { padding: 11px 18px; cursor: pointer; color: #53677f; font: 600 10px "IBM Plex Mono", monospace; text-transform: uppercase; }
 .debug-card details pre { max-height: 320px; margin: 0; padding: 16px 18px; overflow: auto; border-top: 1px solid #d4dde7; background: #172235; color: #dfe9f7; font: 400 10px/1.55 "IBM Plex Mono", monospace; }

@@ -1,7 +1,7 @@
 import puppeteer from "puppeteer-core";
 import { createServer } from "vite";
 import { analyzeDiagram } from "../src/mermaid/diagram-adapters.js";
-import { diagramFixtures, viewerFixtures } from "../src/fixtures/diagram-fixtures.js";
+import { diagramFixtures, fixtureById, viewerFixtures } from "../src/fixtures/diagram-fixtures.js";
 
 const adapterFixtures = {
   "flowchart LR": "flowchart",
@@ -87,6 +87,49 @@ try {
     throw new Error(`Selection panel did not receive the larger share: ${JSON.stringify(panelSizing)}`);
   }
 
+  await page.click(".theme-toggle");
+  await page.waitForFunction(() => (
+    document.querySelector(".app-root")?.dataset.theme === "dark"
+    && document.querySelector("#status")?.textContent === "Diagram ready"
+  ));
+  const contrastFixture = `flowchart LR
+  A[Light custom] --> B[Dark custom]
+  classDef light fill:#fee,stroke:#900
+  classDef dark fill:#263a52,stroke:#577aa5
+  class A light
+  class B dark`;
+  await page.$eval("#source", (textarea, value) => {
+    textarea.value = value;
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  }, contrastFixture);
+  await page.click("#render");
+  await page.waitForFunction(() => ["Diagram ready", "Render failed"].includes(document.querySelector("#status")?.textContent));
+  const diagramContrast = await page.evaluate(() => {
+    const rgb = (value) => value.match(/^rgb\((\d+), (\d+), (\d+)\)$/)?.slice(1).map(Number);
+    const luminance = ([red, green, blue]) => {
+      const channel = (value) => {
+        const normalized = value / 255;
+        return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue);
+    };
+    return ["A", "B"].map((key) => {
+      const node = document.querySelector(`#stage g.node[data-graph-key="${key}"]`);
+      const foreground = rgb(getComputedStyle(node.querySelector(".nodeLabel")).color);
+      const background = rgb(getComputedStyle(node.querySelector(".label-container")).fill);
+      const [lighter, darker] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+      return { key, contrast: (lighter + 0.05) / (darker + 0.05) };
+    });
+  });
+  if (diagramContrast.some(({ contrast }) => contrast < 4.5)) {
+    throw new Error(`Dark theme left Mermaid node labels with insufficient contrast: ${JSON.stringify(diagramContrast)}`);
+  }
+  await page.click(".theme-toggle");
+  await page.waitForFunction(() => (
+    document.querySelector(".app-root")?.dataset.theme === "light"
+    && document.querySelector("#status")?.textContent === "Diagram ready"
+  ));
+
   const exampleKeys = await page.$$eval("#example-picker option", (options) => options.map((option) => option.value).filter(Boolean));
   const relationshipExamples = new Set(viewerFixtures.filter(({ source }) => analyzeDiagram(source).mode === "relational").map(({ id }) => id));
   const orderedExamples = new Set(viewerFixtures.filter(({ source }) => analyzeDiagram(source).mode === "ordered").map(({ id }) => id));
@@ -137,6 +180,122 @@ try {
       throw new Error(`Chart example ${key} unexpectedly exposed graph relationships: ${JSON.stringify(result)}`);
     }
     exampleResults.push({ key, ...result, interaction });
+  }
+
+  const interactionFixtures = [];
+  for (const fixture of diagramFixtures) {
+    const analysis = analyzeDiagram(fixture.source);
+    await page.$eval("#source", (textarea, value) => {
+      textarea.value = value;
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    }, fixture.source);
+    await page.click("#render");
+    await page.waitForFunction(() => ["Diagram ready", "Render failed"].includes(document.querySelector("#status")?.textContent));
+    const interaction = await page.evaluate(() => {
+      const targets = [...document.querySelectorAll("#stage .atlas-node")];
+      const indexedKeys = [...document.querySelectorAll("#node-list [data-node-key]")].map((item) => item.dataset.nodeKey);
+      return {
+        status: document.querySelector("#status")?.textContent,
+        indexedKeys,
+        targets: targets.map((target) => {
+          const paintParts = [
+            ...(target.classList.contains("atlas-paint-part") ? [target] : []),
+            ...target.querySelectorAll(".atlas-paint-part"),
+          ];
+          return {
+            key: target.dataset.graphKey,
+            sourceLine: target.dataset.sourceLine,
+            paintParts: paintParts.length,
+            ownedPaintParts: paintParts.every((part) => part === target || target.contains(part)),
+          };
+        }),
+      };
+    });
+    const issues = [];
+    if (interaction.status !== "Diagram ready") issues.push(`render status ${interaction.status}`);
+    if (analysis.mode === "canvas") {
+      if (interaction.targets.length || interaction.indexedKeys.length) issues.push("canvas diagram exposed selectable targets");
+    } else {
+      if (!interaction.targets.length) issues.push("no selectable targets");
+      if (interaction.targets.length !== interaction.indexedKeys.length) issues.push("target and index counts differ");
+      if (new Set(interaction.targets.map(({ key }) => key)).size !== interaction.targets.length) issues.push("duplicate target keys");
+      if (interaction.targets.some(({ key, paintParts, ownedPaintParts }) => !key || !paintParts || !ownedPaintParts)) {
+        issues.push("target without owned paint parts");
+      }
+      for (const target of interaction.targets) {
+        await page.evaluate((key) => {
+          [...document.querySelectorAll("#node-list [data-node-key]")]
+            .find((item) => item.dataset.nodeKey === key)
+            ?.click();
+        }, target.key);
+        const selection = await page.evaluate(() => {
+          const selected = document.querySelector("#stage .atlas-node.atlas-selected");
+          const selectedPaintParts = selected ? [
+            ...(selected.classList.contains("atlas-paint-part") ? [selected] : []),
+            ...selected.querySelectorAll(".atlas-paint-part.atlas-selected"),
+          ].length : 0;
+          return {
+            key: selected?.dataset.graphKey,
+            selectedPaintParts,
+            sourceHighlighted: document.querySelector("#source-line-highlight")?.classList.contains("visible"),
+          };
+        });
+        if (selection.key !== target.key) issues.push(`selection resolved to ${selection.key || "nothing"}`);
+        if (selection.selectedPaintParts !== target.paintParts) issues.push(`selection styled ${selection.selectedPaintParts} of ${target.paintParts} paint parts for ${target.key}`);
+        if (!target.sourceLine || !selection.sourceHighlighted) issues.push(`missing source mapping for ${target.key}`);
+      }
+    }
+    if (issues.length) {
+      throw new Error(`Interaction contract failed for ${fixture.id}: ${issues.join(", ")} ${JSON.stringify(interaction)}`);
+    }
+    interactionFixtures.push({ id: fixture.id, targets: interaction.targets.length });
+  }
+
+  const architectureFixture = diagramFixtures.find(({ id }) => id === "architecture-core");
+  const architecturePaint = [];
+  for (const theme of ["light", "dark"]) {
+    if (await page.$eval(".app-root", (root) => root.dataset.theme) !== theme) {
+      await page.click(".theme-toggle");
+      await page.waitForFunction((expectedTheme) => (
+        document.querySelector(".app-root")?.dataset.theme === expectedTheme
+        && document.querySelector("#status")?.textContent === "Diagram ready"
+      ), {}, theme);
+    }
+    await page.$eval("#source", (textarea, value) => {
+      textarea.value = value;
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    }, architectureFixture.source);
+    await page.click("#render");
+    await page.waitForFunction(() => document.querySelector("#status")?.textContent === "Diagram ready");
+    const before = await page.evaluate(() => ({
+      iconParts: [...document.querySelectorAll('#stage .atlas-node[data-graph-key="client"] .atlas-paint-part')]
+        .map((part) => ({ className: part.getAttribute("class"), stroke: getComputedStyle(part).stroke })),
+      backgrounds: [...document.querySelectorAll("#stage .architecture-service rect.background")]
+        .map((part) => getComputedStyle(part).stroke),
+    }));
+    await page.click('#stage .atlas-node[data-graph-key="client"]');
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    const result = await page.evaluate(() => ({
+      selected: document.querySelector("#stage .atlas-node.atlas-selected")?.dataset.graphKey,
+      iconParts: [...document.querySelectorAll('#stage .atlas-node[data-graph-key="client"] .atlas-paint-part')]
+        .map((part) => ({ className: part.getAttribute("class"), stroke: getComputedStyle(part).stroke })),
+      paintedBackgrounds: document.querySelectorAll("#stage .architecture-service rect.background.atlas-paint-part").length,
+      backgrounds: [...document.querySelectorAll("#stage .architecture-service rect.background")]
+        .map((part) => getComputedStyle(part).stroke),
+    }));
+    const iconStrokeChanged = result.iconParts.some(({ stroke }, index) => stroke !== before.iconParts[index].stroke);
+    const backgroundChanged = result.backgrounds.some((stroke, index) => stroke !== before.backgrounds[index]);
+    if (result.selected !== "client" || !result.iconParts.length || !iconStrokeChanged || result.paintedBackgrounds || backgroundChanged) {
+      throw new Error(`Architecture selection included non-icon paint parts in ${theme} mode: ${JSON.stringify({ before, result })}`);
+    }
+    architecturePaint.push({ theme, ...result });
+  }
+  if (await page.$eval(".app-root", (root) => root.dataset.theme) !== "light") {
+    await page.click(".theme-toggle");
+    await page.waitForFunction(() => (
+      document.querySelector(".app-root")?.dataset.theme === "light"
+      && document.querySelector("#status")?.textContent === "Diagram ready"
+    ));
   }
 
   const sourceResizerBounds = await page.$eval('.panel-resizer[data-resize="source"]', (resizer) => {
@@ -636,7 +795,24 @@ E[Client] --> A`;
   if (debugResults.failed.length) throw new Error(`Debug syntax fixtures failed: ${JSON.stringify(debugResults.failed, null, 2)}`);
   if (!debugResults.scrollable) throw new Error(`Debug syntax gallery is not scrollable: ${JSON.stringify(debugResults)}`);
 
-  console.log(JSON.stringify({ fixturePath, adapterCoverage: `${adapterCoverage.length} declarations`, debugResults, panelSizing, exampleResults, highlightedSource, resizedPanels, resizedSidebar, savedSensitivity, indexControls, collapsedGroup, expandedGroup, sourceLayout, rendered, selectionVerified: true, keyboardNavigation, selectionPreservedAfterDrag, indexZoomVerified, zoomCenter, zoomRatio, nativePinchRatio, trackpadMovement, panDistance }, null, 2));
+  const experimentLink = await debugPage.$eval('[data-fixture-id="sequence-core"] .experiment-link', (link) => ({
+    href: link.getAttribute("href"),
+    target: link.target,
+    rel: link.rel,
+  }));
+  if (experimentLink.href !== "/?fixture=sequence-core" || experimentLink.target !== "_blank" || !experimentLink.rel.includes("noopener")) {
+    throw new Error(`Debug experiment link is invalid: ${JSON.stringify(experimentLink)}`);
+  }
+  const experimentPage = await browser.newPage();
+  await experimentPage.goto("http://127.0.0.1:4174/?fixture=sequence-core", { waitUntil: "networkidle0" });
+  await experimentPage.waitForFunction(() => document.querySelector("#status")?.textContent === "Diagram ready");
+  const experimentSource = await experimentPage.$eval("#source", (textarea) => textarea.value);
+  if (experimentSource !== fixtureById("sequence-core").source) {
+    throw new Error("Experiment viewer did not load the requested fixture source");
+  }
+  await experimentPage.close();
+
+  console.log(JSON.stringify({ fixturePath, adapterCoverage: `${adapterCoverage.length} declarations`, debugResults, panelSizing, exampleResults, interactionFixtures, highlightedSource, resizedPanels, resizedSidebar, savedSensitivity, indexControls, collapsedGroup, expandedGroup, sourceLayout, rendered, selectionVerified: true, keyboardNavigation, selectionPreservedAfterDrag, indexZoomVerified, zoomCenter, zoomRatio, nativePinchRatio, trackpadMovement, panDistance }, null, 2));
 } finally {
   await browser?.close();
   await server.close();

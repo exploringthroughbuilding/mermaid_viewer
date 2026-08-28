@@ -1,4 +1,5 @@
 import puppeteer from "puppeteer-core";
+import { discoverChrome } from "./discover-chrome.mjs";
 import { createServer } from "vite";
 import { analyzeDiagram } from "../src/mermaid/diagram-adapters.js";
 import { diagramFixtures, fixtureById, viewerFixtures } from "../src/fixtures/diagram-fixtures.js";
@@ -50,8 +51,7 @@ const missingAdapters = adapterCoverage.filter(({ expected, actual }) => expecte
 if (missingAdapters.length) throw new Error(`Diagram adapter coverage failed: ${JSON.stringify(missingAdapters)}`);
 
 const fixturePath = process.argv[2] || new URL("../tests/fixtures/large-flowchart.mmd", import.meta.url).pathname;
-const chromePath = process.env.CHROME_PATH
-  || "/Users/bhavya/.cache/puppeteer/chrome/mac_arm-147.0.7727.57/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing";
+const chromePath = process.env.CHROME_PATH || discoverChrome();
 
 const server = await createServer({ server: { host: "127.0.0.1", port: 4174 } });
 let browser;

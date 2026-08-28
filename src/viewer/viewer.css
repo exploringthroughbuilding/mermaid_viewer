@@ -237,7 +237,10 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .viewport { position: relative; min-width: 0; min-height: 0; overflow: hidden; cursor: grab; touch-action: none; outline: none; background: #f7f8fa; }
 .viewport.dragging { cursor: grabbing; }
 .grid-plane { position: absolute; inset: 0; background-image: linear-gradient(#d9dee6 1px, transparent 1px), linear-gradient(90deg, #d9dee6 1px, transparent 1px), linear-gradient(#e9edf2 1px, transparent 1px), linear-gradient(90deg, #e9edf2 1px, transparent 1px); background-size: 80px 80px, 80px 80px, 16px 16px, 16px 16px; opacity: .72; }
-.stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; user-select: none; }
+.stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; user-select: none; }
+/* Promote only while the camera moves: a permanent will-change locks Chrome's raster
+   scale for the layer and makes every repaint of a large SVG cost seconds. */
+.stage.is-moving { will-change: transform; }
 .stage svg { display: block; max-width: none !important; overflow: visible; filter: drop-shadow(0 12px 22px rgb(28 44 67 / 7%)); }
 .canvas-empty { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; text-align: center; color: #657389; pointer-events: none; }
 .canvas-empty[hidden] { display: none; }
@@ -378,4 +381,106 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
+
+/* --- Guided walkthrough ------------------------------------------------- */
+
+.stage .atlas-node.atlas-walk-path.atlas-dimmed,
+.stage .atlas-walk-path.atlas-dimmed { opacity: .62 !important; }
+.stage .atlas-walk-current .atlas-paint-part { stroke: var(--coral) !important; stroke-width: 4.5px !important; }
+/* Must out-specify the .atlas-incoming/.atlas-outgoing role rules (0,3,0) that
+   selection paints on the same elements, so the traversed hop reads as the
+   walkthrough highlight rather than a generic parent edge. */
+.stage .atlas-edge-part.atlas-walk-edge { opacity: 1 !important; stroke: var(--coral) !important; stroke-width: 4.5px !important; }
+.stage path.atlas-edge-part.atlas-walk-edge { stroke-dasharray: 10 6; animation: walk-dash 700ms linear infinite; }
+.stage .atlas-edge-label.atlas-walk-edge { color: var(--coral); opacity: 1 !important; }
+
+@keyframes walk-dash { to { stroke-dashoffset: -30; } }
+
+.walkthrough-bar {
+  position: fixed; left: 50%; bottom: 22px; z-index: 40; width: min(660px, calc(100vw - 48px));
+  translate: -50% 0; display: grid; gap: 8px; padding: 12px 14px 11px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--paper);
+  box-shadow: var(--shadow); color: var(--ink);
+}
+.walkthrough-bar[hidden] { display: none; }
+.walkthrough-head { display: flex; align-items: center; gap: 9px; }
+.walkthrough-badge {
+  padding: 2px 7px; border-radius: 4px; background: var(--blue-soft); color: var(--blue);
+  font: 600 9px/1.6 "IBM Plex Mono", monospace; letter-spacing: .09em; text-transform: uppercase;
+}
+.walkthrough-title { flex: 1; margin: 0; font: 600 12px Manrope, sans-serif; color: var(--muted); }
+.walkthrough-close {
+  width: 22px; height: 22px; border: 1px solid transparent; border-radius: 5px;
+  background: none; color: var(--muted); font-size: 15px; line-height: 1; cursor: pointer;
+}
+.walkthrough-close:hover { border-color: var(--line); color: var(--ink); }
+.walkthrough-body { min-height: 40px; }
+.walkthrough-node { margin: 0 0 3px; font: 600 15px Manrope, sans-serif; }
+.walkthrough-caption { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.walkthrough-progress { display: flex; gap: 4px; }
+.walkthrough-progress button {
+  flex: 1; height: 4px; padding: 0; border: none; border-radius: 2px;
+  background: var(--line); cursor: pointer; transition: background 140ms ease;
+}
+.walkthrough-progress button.visited { background: color-mix(in srgb, var(--coral) 45%, var(--line)); }
+.walkthrough-progress button.active { background: var(--coral); }
+.walkthrough-controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.walkthrough-controls button {
+  min-width: 74px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--panel); color: var(--ink); font: 600 12px Manrope, sans-serif; cursor: pointer;
+}
+.walkthrough-controls button:hover:not(:disabled) { border-color: var(--blue); color: var(--blue); }
+.walkthrough-controls button.primary { border-color: var(--blue); background: var(--blue); color: #fff; }
+.walkthrough-controls button.primary:hover:not(:disabled) { background: #1b4c88; color: #fff; }
+.walkthrough-controls button:disabled { opacity: .42; cursor: default; }
+.walkthrough-counter { font: 500 11px "IBM Plex Mono", monospace; color: var(--muted); }
+
+.walkthrough-bar[data-theme="dark"] {
+  --ink: #e7edf6; --muted: #98a5b8; --line: #303947; --panel: #202834; --paper: #171e27;
+  --blue-soft: #1e3352; --blue: #7ea9dd; color: #e7edf6;
+}
+
+/* --- Agent activity log -------------------------------------------------- */
+
+.agent-activity {
+  /* Offset below the canvas toolbar: a fixed panel at the top right would sit
+     over the zoom, fit, and theme controls and swallow their clicks. */
+  position: fixed; right: 14px; top: 58px; z-index: 39; width: 258px;
+  display: grid; gap: 0; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--paper); box-shadow: var(--shadow); color: var(--ink); overflow: hidden;
+}
+.agent-activity-head {
+  display: flex; align-items: center; gap: 7px; padding: 8px 9px 8px 11px;
+  border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.agent-activity-head p { flex: 1; margin: 0; font: 600 11px Manrope, sans-serif; }
+.agent-activity-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--mint); }
+.agent-activity-count { font: 500 10px "IBM Plex Mono", monospace; color: var(--muted); }
+.agent-activity-toggle {
+  width: 18px; height: 18px; padding: 0; border: 1px solid transparent; border-radius: 4px;
+  background: none; color: var(--muted); font-size: 13px; line-height: 1; cursor: pointer;
+}
+.agent-activity-toggle:hover { border-color: var(--line); color: var(--ink); }
+.agent-activity.collapsed .agent-activity-list { display: none; }
+.agent-activity-list { max-height: 268px; margin: 0; padding: 5px; overflow-y: auto; list-style: none; }
+.agent-activity-item { padding: 5px 6px; border-left: 2px solid var(--line); border-radius: 0 4px 4px 0; }
+.agent-activity-item + .agent-activity-item { margin-top: 3px; }
+.agent-activity-item.running { border-left-color: var(--blue); }
+.agent-activity-item.ok { border-left-color: var(--mint); }
+.agent-activity-item.failed { border-left-color: var(--coral); }
+.agent-activity-row { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.agent-activity-row code { font: 500 10.5px "IBM Plex Mono", monospace; color: var(--ink); }
+.agent-activity-time { font: 400 9px "IBM Plex Mono", monospace; color: var(--muted); }
+.agent-activity-args { margin: 2px 0 0; font: 400 9.5px "IBM Plex Mono", monospace; color: var(--muted); word-break: break-word; }
+.agent-activity-detail { margin: 2px 0 0; font-size: 10px; line-height: 1.4; color: var(--muted); }
+
+.agent-activity[data-theme="dark"] {
+  --ink: #e7edf6; --muted: #98a5b8; --line: #303947; --panel: #202834; --paper: #171e27;
+  color: #e7edf6;
+}
+
+@media (max-width: 900px) {
+  .agent-activity { display: none; }
+  .walkthrough-bar { width: calc(100vw - 24px); bottom: 12px; }
 }

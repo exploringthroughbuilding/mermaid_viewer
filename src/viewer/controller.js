@@ -684,8 +684,22 @@ function clearSelection() {
   renderNodeList();
 }
 
+let settleMotionTimer = 0;
+
+/**
+ * Layer promotion is scoped to actual movement. Chrome pins a promoted layer's
+ * raster scale to the scale it was first painted at, so leaving the stage
+ * promoted makes every repaint of a large SVG re-rasterise at the stale zoom.
+ */
+function markCameraMoving() {
+  elements.stage.classList.add("is-moving");
+  clearTimeout(settleMotionTimer);
+  settleMotionTimer = setTimeout(() => elements.stage.classList.remove("is-moving"), 300);
+}
+
 function applyTransform() {
   transformRevision += 1;
+  markCameraMoving();
   elements.stage.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`;
   elements.zoomLevel.value = `${Math.round(transform.scale * 100)}%`;
   elements.zoomLevel.textContent = elements.zoomLevel.value;
@@ -720,9 +734,10 @@ function fitGraph() {
   applyTransform();
 }
 
-function zoomToNode(key) {
+/** The camera position that centres one node, without committing to it. */
+function cameraTargetForNode(key) {
   const node = graph.nodes.get(key)?.element;
-  if (!node) return;
+  if (!node) return null;
   const viewportRect = elements.viewport.getBoundingClientRect();
   const nodeRect = node.getBoundingClientRect();
   const nodeCenterX = nodeRect.left + nodeRect.width / 2 - viewportRect.left;
@@ -731,11 +746,73 @@ function zoomToNode(key) {
   const graphCenterY = (nodeCenterY - transform.y) / transform.scale;
   const unscaledWidth = nodeRect.width / transform.scale;
   const unscaledHeight = nodeRect.height / transform.scale;
-  const targetScale = Math.max(0.75, Math.min(2, 320 / Math.max(unscaledWidth, unscaledHeight, 1)));
-  transform.scale = targetScale;
-  transform.x = viewportRect.width / 2 - graphCenterX * targetScale;
-  transform.y = viewportRect.height / 2 - graphCenterY * targetScale;
+  const scale = Math.max(0.75, Math.min(2, 320 / Math.max(unscaledWidth, unscaledHeight, 1)));
+  return {
+    scale,
+    x: viewportRect.width / 2 - graphCenterX * scale,
+    y: viewportRect.height / 2 - graphCenterY * scale,
+  };
+}
+
+function zoomToNode(key) {
+  const target = cameraTargetForNode(key);
+  if (!target) return;
+  cancelCameraAnimation();
+  transform = target;
   applyTransform();
+}
+
+let cameraAnimation = null;
+
+function cancelCameraAnimation() {
+  if (!cameraAnimation) return;
+  cancelAnimationFrame(cameraAnimation.frame);
+  cameraAnimation.settle();
+  cameraAnimation = null;
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+}
+
+/**
+ * Tween the camera in rAF rather than via a CSS transition: the stylesheet's
+ * reduced-motion rule zeroes transition durations globally, and transitioning
+ * `transform` on the stage would fight the pan/zoom handlers mid-drag.
+ */
+function animateCameraTo(target, duration = 520) {
+  cancelCameraAnimation();
+  if (!target) return Promise.resolve(false);
+  if (prefersReducedMotion() || duration <= 0) {
+    transform = { ...target };
+    applyTransform();
+    return Promise.resolve(true);
+  }
+
+  const from = { ...transform };
+  const start = performance.now();
+  return new Promise((resolve) => {
+    const settle = () => resolve(false);
+    const step = (now) => {
+      const progress = Math.min(1, (now - start) / duration);
+      const eased = progress < 0.5
+        ? 4 * progress ** 3
+        : 1 - ((-2 * progress + 2) ** 3) / 2;
+      transform = {
+        x: from.x + (target.x - from.x) * eased,
+        y: from.y + (target.y - from.y) * eased,
+        scale: from.scale + (target.scale - from.scale) * eased,
+      };
+      applyTransform();
+      if (progress < 1) {
+        cameraAnimation.frame = requestAnimationFrame(step);
+        return;
+      }
+      cameraAnimation = null;
+      resolve(true);
+    };
+    cameraAnimation = { frame: requestAnimationFrame(step), settle };
+  });
 }
 
 function clearKeyboardPreview() {
@@ -875,6 +952,7 @@ async function renderDiagram(preserveView = false) {
       });
     }
     setStatus("Diagram ready", "ready");
+    notifyRendered();
   } catch (error) {
     elements.stage.innerHTML = "";
     elements.canvasEmpty.hidden = false;
@@ -895,6 +973,7 @@ let suppressCanvasClick = false;
 elements.viewport.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) return;
   if (event.target.closest("[data-graph-key]")) return;
+  cancelCameraAnimation();
   drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: transform.x, originY: transform.y, moved: false };
   elements.viewport.setPointerCapture(event.pointerId);
   elements.viewport.classList.add("dragging");
@@ -924,6 +1003,7 @@ elements.viewport.addEventListener("pointerup", (event) => {
 
 elements.viewport.addEventListener("wheel", (event) => {
   event.preventDefault();
+  cancelCameraAnimation();
   if (sensitivity.device === "trackpad" && !event.ctrlKey) {
     transform.x -= event.deltaX * sensitivity.pan;
     transform.y -= event.deltaY * sensitivity.pan;
@@ -985,7 +1065,11 @@ elements.render.addEventListener("click", renderDiagram);
 elements.file.addEventListener("change", async () => {
   const file = elements.file.files?.[0];
   if (!file) return;
-  loadSource(await file.text());
+  const text = await file.text();
+  loadSource(text);
+  // The WebMCP layer listens for this to catalogue every diagram in the file,
+  // so an agent can list them by name instead of only seeing the active block.
+  window.dispatchEvent(new CustomEvent("atlas-file-imported", { detail: { text, name: file.name } }));
   await renderDiagram();
 });
 elements.examplePicker.addEventListener("change", () => loadExample(elements.examplePicker.value));
@@ -1142,6 +1226,92 @@ window.addEventListener("keydown", (event) => {
     else clearSelection();
   }
 });
+
+/* ---------------------------------------------------------------------------
+ * Agent-facing surface
+ *
+ * WebMCP tools drive the workbench through this object only. Keeping it as the
+ * single seam means tool handlers never reach into module state or the DOM, and
+ * every agent-visible capability stays something a human can also do by hand.
+ * ------------------------------------------------------------------------- */
+
+const renderSubscribers = new Set();
+const sourceHistory = [];
+const maxHistoryDepth = 25;
+
+function notifyRendered() {
+  const detail = diagramSummary();
+  renderSubscribers.forEach((subscriber) => {
+    try {
+      subscriber(detail);
+    } catch {
+      // A failing observer must never break rendering.
+    }
+  });
+}
+
+function diagramSummary() {
+  return {
+    id: diagramKind,
+    mode: diagramAnalysis.mode,
+    supportsRelationships: diagramSupportsRelationships(),
+    nodeCount: graph.nodes.size,
+    edgeCount: graph.edges.length,
+    vocabulary: relationshipVocabulary(),
+  };
+}
+
+/** Snapshot the editor so any agent edit is reversible in one step. */
+function pushSourceSnapshot(label) {
+  sourceHistory.push({ source: elements.source.value, label, at: Date.now() });
+  if (sourceHistory.length > maxHistoryDepth) sourceHistory.shift();
+}
+
+async function setSourceAndRender(source, { label = "edit", snapshot = true } = {}) {
+  if (snapshot) pushSourceSnapshot(label);
+  elements.source.value = source;
+  updateSourceFromEditor();
+  await renderDiagram();
+  return diagramSummary();
+}
+
+async function undoSourceChange() {
+  const previous = sourceHistory.pop();
+  if (!previous) return null;
+  elements.source.value = previous.source;
+  updateSourceFromEditor();
+  await renderDiagram();
+  return { label: previous.label, restoredAt: previous.at, ...diagramSummary() };
+}
+
+export const atlasApi = {
+  getGraph: () => graph,
+  getSummary: diagramSummary,
+  getSource: () => elements.source.value,
+  getSelectedKey: () => selectedKey,
+  historyDepth: () => sourceHistory.length,
+  setSourceAndRender,
+  undoSourceChange,
+  pushSourceSnapshot,
+  validateSource: (source) => parseMermaid(source),
+  selectNode,
+  clearSelection,
+  fitGraph,
+  zoomToNode,
+  cameraTargetForNode,
+  animateCameraTo,
+  cancelCameraAnimation,
+  setStatus,
+  onRender(subscriber) {
+    renderSubscribers.add(subscriber);
+    return () => renderSubscribers.delete(subscriber);
+  },
+  elements: {
+    stage: elements.stage,
+    viewport: elements.viewport,
+    source: elements.source,
+  },
+};
 
 loadSource(sample);
 populateExamples();

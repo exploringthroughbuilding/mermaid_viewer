@@ -1,11 +1,7 @@
 import mermaid from "mermaid";
 import elkLayouts from "@mermaid-js/layout-elk";
-import tidyTreeLayouts from "@mermaid-js/layout-tidy-tree";
-import zenuml from "@mermaid-js/mermaid-zenuml";
 
 mermaid.registerLayoutLoaders(elkLayouts);
-mermaid.registerLayoutLoaders(tidyTreeLayouts);
-await mermaid.registerExternalDiagrams([zenuml]);
 
 let renderQueue = Promise.resolve();
 

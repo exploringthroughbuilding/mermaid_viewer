@@ -161,6 +161,12 @@ describe("bounded graph queries", () => {
     expect(searchNodes(checkout, "Payments").results.map((entry) => entry.id)).toContain("PaymentDB");
   });
 
+  it("matches natural-language spacing against camel-cased Mermaid ids", () => {
+    const lifecycle = graphOf([["Validating", "AwaitingPayment"]]);
+    expect(searchNodes(lifecycle, "awaiting payment").results[0]?.id).toBe("AwaitingPayment");
+    expect(resolveNodeRef(lifecycle, "awaiting payment")).toEqual({ ok: true, id: "AwaitingPayment" });
+  });
+
   it("expands a neighbourhood by direction and depth", () => {
     const out = neighborhood(checkout, "Checkout", { direction: "outgoing", depth: 2 });
     expect(out.levels[0].nodes.map((node) => node.id).sort()).toEqual(["Inventory", "Payment"]);
@@ -194,6 +200,19 @@ describe("bounded graph queries", () => {
   it("returns no directed route when the direction forbids it", () => {
     expect(findPaths(checkout, "PaymentDB", "Web", { direction: "outgoing" }).paths).toHaveLength(0);
     expect(findPaths(checkout, "PaymentDB", "Web", { direction: "both" }).paths.length).toBeGreaterThan(0);
+  });
+
+  it("caps queued paths on dense graphs before memory grows without bound", () => {
+    const nodeCount = 60;
+    const edges = [];
+    for (let from = 0; from < nodeCount - 1; from += 1) {
+      for (let to = from + 1; to < nodeCount - 1; to += 1) edges.push([String(from), String(to)]);
+    }
+    edges.push([String(nodeCount - 1), String(nodeCount - 1)]);
+    const result = findPaths(graphOf(edges), "0", String(nodeCount - 1), { explorationCap: 500 });
+    expect(result.paths).toHaveLength(0);
+    expect(result.complete).toBe(false);
+    expect(result.explored).toBeLessThanOrEqual(500);
   });
 
   it("identifies entry points, dead ends, and orphans", () => {

@@ -1,4 +1,4 @@
-import { initialiseLibrary, tools } from "./tools.js";
+import { disposeLibrary, initialiseLibrary, tools } from "./tools.js";
 import { announceReady, logToolCall } from "./activity-log.js";
 
 let registration = null;
@@ -26,8 +26,10 @@ async function ensureModelContext() {
 function instrument(tool) {
   return {
     name: tool.name,
+    title: tool.title,
     description: tool.description,
     inputSchema: tool.inputSchema,
+    annotations: tool.annotations,
     async execute(input = {}) {
       const call = logToolCall(tool.name, input);
       try {
@@ -77,6 +79,7 @@ export async function registerAtlasTools() {
 export function unregisterAtlasTools() {
   registration?.abort();
   registration = null;
+  disposeLibrary();
 }
 
 export function webmcpMode() {

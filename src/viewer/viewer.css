@@ -254,7 +254,7 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .empty-glyph span:nth-child(4) { left: 35px; bottom: 0; border-color: var(--mint); }
 .empty-glyph::before, .empty-glyph::after { content: ""; position: absolute; left: 12px; top: 30px; width: 65px; height: 1px; background: #9ba8b8; transform: rotate(-23deg); }
 .empty-glyph::after { transform: rotate(22deg); }
-.canvas-footer { display: flex; align-items: center; justify-content: flex-end; gap: 18px; padding: 0 15px; border-top: 1px solid #d3dae3; color: #7b8798; background: #eef1f5; font: 9px "IBM Plex Mono", monospace; text-transform: uppercase; letter-spacing: .04em; }
+.canvas-footer { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 0 15px 0 8px; border-top: 1px solid #d3dae3; color: #7b8798; background: #eef1f5; font: 9px "IBM Plex Mono", monospace; text-transform: uppercase; letter-spacing: .04em; }
 
 /* These classes are attached after Mermaid renders the SVG. */
 .stage .atlas-node { cursor: pointer; transition: opacity 120ms ease, filter 120ms ease; }
@@ -275,7 +275,9 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .stage .atlas-edge-part.atlas-incoming { stroke: #7655b5 !important; stroke-width: 3.5px !important; stroke-dasharray: 9 5; opacity: 1 !important; }
 .stage .atlas-edge-part.atlas-outgoing { stroke: #25866a !important; stroke-width: 3.5px !important; opacity: 1 !important; }
 .stage path.relationshipLine.atlas-incoming,
-.stage path.relationshipLine.atlas-outgoing { fill: none !important; stroke-width: var(--atlas-original-stroke-width) !important; }
+.stage path.relationshipLine.atlas-outgoing,
+.stage path.relation.atlas-incoming,
+.stage path.relation.atlas-outgoing { fill: none !important; stroke-width: var(--atlas-original-stroke-width) !important; }
 .stage .atlas-edge-label { transition: opacity 120ms ease, color 120ms ease; }
 .stage .atlas-edge-label.atlas-incoming { color: #604294; opacity: 1 !important; }
 .stage .atlas-edge-label.atlas-outgoing { color: #1d7058; opacity: 1 !important; }
@@ -288,6 +290,7 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .stage .atlas-edge-label.atlas-preview text { fill: #8b5715 !important; }
 .stage .atlas-paint-part.atlas-preview,
 .stage .atlas-edge-part.atlas-preview { stroke: #c6872d !important; stroke-width: 5px !important; stroke-dasharray: 6 3; filter: drop-shadow(0 0 5px rgb(198 135 45 / 48%)); opacity: 1 !important; }
+.stage path.relation.atlas-preview { stroke-width: var(--atlas-original-stroke-width) !important; }
 
 .app-root[data-theme="dark"] {
   color-scheme: dark;
@@ -364,6 +367,7 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .app-root[data-theme="dark"] .viewport { background: #151b23; }
 .app-root[data-theme="dark"] .grid-plane { background-image: linear-gradient(#2d3745 1px, transparent 1px), linear-gradient(90deg, #2d3745 1px, transparent 1px), linear-gradient(#202833 1px, transparent 1px), linear-gradient(90deg, #202833 1px, transparent 1px); opacity: .82; }
 .app-root[data-theme="dark"] .stage svg { filter: drop-shadow(0 12px 22px rgb(0 0 0 / 28%)); }
+.app-root[data-theme="dark"] .stage .architecture-groups > rect.node-bkg { stroke: #8e9caf !important; }
 .app-root[data-theme="dark"] .canvas-empty { color: #8e9caf; }
 .app-root[data-theme="dark"] .canvas-empty p { color: #b8c4d4; }
 .app-root[data-theme="dark"] .empty-glyph span { background: #151b23; }
@@ -382,7 +386,8 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
   .panel-resizer { display: none; }
   .sidebar-resizer { display: none; }
   .canvas-shell { grid-template-rows: 46px 1fr 26px; }
-  .canvas-footer span:first-child { display: none; }
+  .canvas-footer > span { display: none; }
+  .agent-activity-trigger { max-width: 100%; }
   .toolbar-actions .theme-toggle { min-width: 32px; padding-inline: 4px; }
   .theme-toggle-label { display: none; }
 }
@@ -401,6 +406,7 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
    selection paints on the same elements, so the traversed hop reads as the
    walkthrough highlight rather than a generic parent edge. */
 .stage .atlas-edge-part.atlas-walk-edge { opacity: 1 !important; stroke: var(--coral) !important; stroke-width: 4.5px !important; }
+.stage path.relation.atlas-walk-edge { stroke-width: var(--atlas-original-stroke-width) !important; }
 .stage path.atlas-edge-part.atlas-walk-edge { stroke-dasharray: 10 6; animation: walk-dash 700ms linear infinite; }
 .stage .atlas-edge-label.atlas-walk-edge { color: var(--coral); opacity: 1 !important; }
 .stage text.atlas-edge-label.atlas-walk-edge,
@@ -409,7 +415,7 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 @keyframes walk-dash { to { stroke-dashoffset: -30; } }
 
 .walkthrough-bar {
-  position: fixed; left: 50%; bottom: 22px; z-index: 40; width: min(660px, calc(100vw - 48px));
+  position: fixed; left: 50%; bottom: 42px; z-index: 40; width: min(660px, calc(100vw - 48px));
   translate: -50% 0; display: grid; gap: 8px; padding: 12px 14px 11px;
   border: 1px solid var(--line); border-radius: 12px; background: var(--paper);
   box-shadow: var(--shadow); color: var(--ink);
@@ -431,11 +437,15 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .walkthrough-caption { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
 .walkthrough-progress { display: flex; gap: 4px; }
 .walkthrough-progress button {
-  flex: 1; height: 4px; padding: 0; border: none; border-radius: 2px;
-  background: var(--line); cursor: pointer; transition: background 140ms ease;
+  --walkthrough-progress-color: var(--line);
+  flex: 1; height: 11px; min-height: 0; padding: 0; border: none; border-radius: 2px;
+  background: linear-gradient(var(--walkthrough-progress-color), var(--walkthrough-progress-color)) center / 100% 3px no-repeat;
+  cursor: pointer; transition: background-size 140ms ease;
 }
-.walkthrough-progress button.visited { background: color-mix(in srgb, var(--coral) 45%, var(--line)); }
-.walkthrough-progress button.active { background: var(--coral); }
+.walkthrough-progress button:hover { background-size: 100% 5px; }
+.walkthrough-progress button:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.walkthrough-progress button.visited { --walkthrough-progress-color: color-mix(in srgb, var(--coral) 45%, var(--line)); }
+.walkthrough-progress button.active { --walkthrough-progress-color: var(--coral); }
 .walkthrough-controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .walkthrough-controls button {
   min-width: 74px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 7px;
@@ -452,46 +462,45 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
   --blue-soft: #1e3352; --blue: #7ea9dd; color: #e7edf6;
 }
 
-/* --- Agent activity log -------------------------------------------------- */
+/* --- Agent activity ------------------------------------------------------ */
 
-.agent-activity {
-  /* Offset below the canvas toolbar: a fixed panel at the top right would sit
-     over the zoom, fit, and theme controls and swallow their clicks. */
-  position: fixed; right: 14px; top: 58px; z-index: 39; width: 258px;
-  display: grid; gap: 0; border: 1px solid var(--line); border-radius: 10px;
-  background: var(--paper); box-shadow: var(--shadow); color: var(--ink); overflow: hidden;
+.agent-activity-trigger {
+  min-width: 0; min-height: 24px; max-width: min(58vw, 460px); gap: 7px; padding: 0 8px;
+  border-color: transparent; border-radius: 3px; background: transparent; color: inherit;
+  font: inherit; text-transform: none; letter-spacing: 0;
 }
-.agent-activity-head {
-  display: flex; align-items: center; gap: 7px; padding: 8px 9px 8px 11px;
-  border-bottom: 1px solid var(--line); background: var(--panel);
-}
-.agent-activity-head p { flex: 1; margin: 0; font: 600 11px Manrope, sans-serif; }
-.agent-activity-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--mint); }
-.agent-activity-count { font: 500 10px "IBM Plex Mono", monospace; color: var(--muted); }
-.agent-activity-toggle {
-  width: 18px; height: 18px; padding: 0; border: 1px solid transparent; border-radius: 4px;
-  background: none; color: var(--muted); font-size: 13px; line-height: 1; cursor: pointer;
-}
-.agent-activity-toggle:hover { border-color: var(--line); color: var(--ink); }
-.agent-activity.collapsed .agent-activity-list { display: none; }
-.agent-activity-list { max-height: 268px; margin: 0; padding: 5px; overflow-y: auto; list-style: none; }
-.agent-activity-item { padding: 5px 6px; border-left: 2px solid var(--line); border-radius: 0 4px 4px 0; }
+.agent-activity-trigger:hover:not(:disabled) { border-color: #b9c4d1; background: #f8fafc; }
+.agent-activity-trigger code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #435168; font: 500 9.5px "IBM Plex Mono", monospace; }
+.agent-activity-label { color: #68768a; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+.agent-activity-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: #9ca8b8; }
+.agent-activity-trigger.running .agent-activity-dot { background: #e69a37; animation: pulse 1s infinite alternate; }
+.agent-activity-trigger.ok .agent-activity-dot { background: var(--mint); }
+.agent-activity-trigger.failed .agent-activity-dot { background: var(--coral); }
+.agent-activity-time { flex: 0 0 auto; color: var(--muted); font: 400 9px "IBM Plex Mono", monospace; }
+
+.agent-activity-dialog { width: min(620px, calc(100vw - 32px)); }
+.agent-activity-dialog-actions { display: flex; align-items: center; gap: 10px; }
+.agent-activity-count { color: var(--muted); font: 500 10px "IBM Plex Mono", monospace; }
+.agent-activity-dialog-body { min-height: 180px; max-height: min(58vh, 520px); overflow: auto; background: var(--paper); }
+.agent-activity-list { margin: 0; padding: 10px; list-style: none; }
+.agent-activity-empty { padding: 44px 12px; color: var(--muted); text-align: center; font-size: 11px; }
+.agent-activity-item { padding: 9px 10px; border-left: 2px solid var(--line); border-radius: 0 4px 4px 0; background: var(--panel); }
 .agent-activity-item + .agent-activity-item { margin-top: 3px; }
 .agent-activity-item.running { border-left-color: var(--blue); }
 .agent-activity-item.ok { border-left-color: var(--mint); }
 .agent-activity-item.failed { border-left-color: var(--coral); }
 .agent-activity-row { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
-.agent-activity-row code { font: 500 10.5px "IBM Plex Mono", monospace; color: var(--ink); }
-.agent-activity-time { font: 400 9px "IBM Plex Mono", monospace; color: var(--muted); }
+.agent-activity-row code { font: 600 10.5px "IBM Plex Mono", monospace; color: var(--ink); }
 .agent-activity-args { margin: 2px 0 0; font: 400 9.5px "IBM Plex Mono", monospace; color: var(--muted); word-break: break-word; }
 .agent-activity-detail { margin: 2px 0 0; font-size: 10px; line-height: 1.4; color: var(--muted); }
+.agent-activity-dialog footer { align-items: center; }
+.agent-activity-dialog footer p { margin: 0; color: var(--muted); font: 500 9px "IBM Plex Mono", monospace; text-transform: uppercase; letter-spacing: .05em; }
 
-.agent-activity[data-theme="dark"] {
-  --ink: #e7edf6; --muted: #98a5b8; --line: #303947; --panel: #202834; --paper: #171e27;
-  color: #e7edf6;
-}
+.app-root[data-theme="dark"] .agent-activity-trigger code { color: #b8c3d2; }
+.app-root[data-theme="dark"] .agent-activity-trigger:hover:not(:disabled) { border-color: #485568; background: #242c38; }
+.app-root[data-theme="dark"] .agent-activity-dialog-body { background: var(--paper); }
+.app-root[data-theme="dark"] .agent-activity-item { background: var(--panel); }
 
 @media (max-width: 900px) {
-  .agent-activity { display: none; }
-  .walkthrough-bar { width: calc(100vw - 24px); bottom: 12px; }
+  .walkthrough-bar { width: calc(100vw - 24px); bottom: 38px; }
 }

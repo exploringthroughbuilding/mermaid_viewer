@@ -75,7 +75,7 @@ export default function App() {
               <label className="file-button" htmlFor="file-input">Open file</label>
               <input id="file-input" type="file" accept=".mmd,.mermaid,.md,.markdown,.txt" />
               <select id="example-picker" aria-label="Load example diagram">
-                <option value="">Examples</option>
+                <option value="">Load diagram</option>
               </select>
               <button id="render" className="primary" type="button">Render diagram</button>
             </div>
@@ -157,9 +157,21 @@ export default function App() {
             </div>
           </div>
           <footer className="canvas-footer">
-            <span>Adaptive layout</span>
+            <button
+              id="agent-activity-trigger"
+              className="agent-activity-trigger idle"
+              type="button"
+              aria-haspopup="dialog"
+              aria-controls="agent-activity-dialog"
+              aria-label="Open agent activity. No agent actions yet."
+              disabled
+            >
+              <span className="agent-activity-dot" aria-hidden="true" />
+              <span className="agent-activity-label">Agent</span>
+              <code id="latest-agent-action" aria-live="polite">No actions yet</code>
+              <span id="latest-agent-time" className="agent-activity-time" />
+            </button>
             <span>←→ relation · ↑↓ browse · S select · Z zoom</span>
-            <span>Rendered on this device</span>
           </footer>
         </section>
       </main>
@@ -201,6 +213,29 @@ export default function App() {
           </div>
           <footer>
             <button id="reset-settings" type="button">Reset defaults</button>
+            <button value="done" className="primary">Done</button>
+          </footer>
+        </form>
+      </dialog>
+
+      <dialog id="agent-activity-dialog" className="settings-dialog agent-activity-dialog" aria-labelledby="agent-activity-title">
+        <form method="dialog">
+          <header>
+            <div>
+              <h2 id="agent-activity-title">Agent activity</h2>
+            </div>
+            <div className="agent-activity-dialog-actions">
+              <span id="agent-activity-count" className="agent-activity-count">0 actions</span>
+              <button value="close" className="dialog-close" aria-label="Close agent activity">×</button>
+            </div>
+          </header>
+          <div className="agent-activity-dialog-body">
+            <ol id="agent-activity-list" className="agent-activity-list" aria-live="polite">
+              <li className="agent-activity-empty">Agent tool calls will appear here.</li>
+            </ol>
+          </div>
+          <footer>
+            <p>Newest action first</p>
             <button value="done" className="primary">Done</button>
           </footer>
         </form>

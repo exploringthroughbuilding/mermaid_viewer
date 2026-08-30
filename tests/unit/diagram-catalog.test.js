@@ -3,7 +3,7 @@ import { diagramFixtures, fixtureById, viewerFixtures } from "../../src/fixtures
 import { analyzeDiagram } from "../../src/mermaid/diagram-adapters.js";
 
 const requiredAdapterIds = new Set([
-  "flowchart", "block", "sequence", "zenuml", "class", "state", "er", "architecture", "swimlane",
+  "flowchart", "block", "sequence", "class", "state", "er", "architecture", "swimlane",
   "requirement", "sankey", "mindmap", "treeView", "treemap", "ishikawa", "wardley", "gantt",
   "kanban", "eventmodeling", "timeline", "gitGraph", "journey", "packet", "railroad", "pie",
   "quadrantChart", "xychart", "radar", "venn", "cynefin", "c4", "info",
@@ -26,13 +26,21 @@ describe("diagram fixture catalog", () => {
   });
 
   it("keeps viewer examples as references to catalog entries", () => {
-    expect(viewerFixtures.length).toBeGreaterThan(10);
+    expect(viewerFixtures.map(({ id }) => id)).toEqual([
+      "flowchart-core",
+      "sequence-core",
+      "class-core",
+      "state-core",
+      "er-core",
+      "mindmap-core",
+      "architecture-core",
+    ]);
     viewerFixtures.forEach(({ id }) => expect(fixtureById(id)?.viewer, id).toBe(true));
   });
 
-  it("covers every installed ELK algorithm and tidy-tree", () => {
+  it("covers every installed ELK algorithm", () => {
     const sources = diagramFixtures.map(({ source }) => source).join("\n\n");
-    ["elk", "elk.layered", "elk.stress", "elk.force", "elk.mrtree", "elk.sporeOverlap", "tidy-tree"]
+    ["elk", "elk.layered", "elk.stress", "elk.force", "elk.mrtree", "elk.sporeOverlap"]
       .forEach((layout) => expect(sources).toContain(`layout: ${layout}`));
   });
 });
@@ -95,7 +103,7 @@ describe("semantic analysis", () => {
     const grouped = ["state-core", "block-core", "gantt-core", "architecture-core"]
       .map((id) => analyzeDiagram(fixtureById(id).source));
     expect(grouped.map(({ groups }) => groups.map(({ label }) => label))).toEqual([
-      ["Active"],
+      ["Checkout"],
       ["group"],
       ["Build"],
       ["Cloud"],

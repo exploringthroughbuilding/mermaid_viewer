@@ -5,7 +5,10 @@ const DebugPage = import.meta.env.DEV ? lazy(() => import("./debug/DebugPage.jsx
 
 export default function App() {
   if (window.location.pathname !== "/debug") return <ViewerPage />;
-  if (!DebugPage) return <ViewerPage />;
+  if (!DebugPage) {
+    window.location.replace("/");
+    return null;
+  }
   return (
     <Suspense fallback={<div className="route-loading">Loading syntax laboratory…</div>}>
       <DebugPage />

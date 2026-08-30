@@ -5,7 +5,6 @@ const CANVAS = "canvas";
 const selectorSets = {
   graph: ["g.node"],
   sequence: ['g[data-et="participant"]', "g.actor"],
-  zenuml: ["g.participant:not(.participant-starter)"],
   architecture: ["g.architecture-service"],
   block: ["g.node.flowchart-label"],
   state: ["g.node:not(.statediagram-note)", "g.statediagram-state.statediagram-cluster"],
@@ -215,13 +214,11 @@ function parseGraph(rows) {
   return result;
 }
 
-function parseSequence(rows, zen = false) {
+function parseSequence(rows) {
   const result = collection();
   rows.forEach(({ text, line }) => {
-    if (!text || /^(sequenceDiagram|zenuml|title\b|autonumber\b|activate\b|deactivate\b|Note\b|loop\b|alt\b|else\b|opt\b|par\b|and\b|critical\b|break\b|end\b|if\b|while\b|for(?:Each)?\b|try\b|catch\b|finally\b|return\b|\/\/)/i.test(text)) return;
-    const participant = text.match(/^(?:(?:create\s+)?(?:participant|actor)|participant)\s+([\w.-]+)(?:\s+as\s+(.+))?(?:\s+@\{.*})?$/i)
-      || (zen ? text.match(/^@(?:Actor|Database|Boundary|Control|Entity|Queue)\s+([\w.-]+)(?:\s+as\s+(.+))?$/i) : null)
-      || (zen ? text.match(/^([\w.-]+)\s+as\s+(.+)$/i) : null);
+    if (!text || /^(sequenceDiagram|title\b|autonumber\b|activate\b|deactivate\b|Note\b|loop\b|alt\b|else\b|opt\b|par\b|and\b|critical\b|break\b|end\b)/i.test(text)) return;
+    const participant = text.match(/^(?:(?:create\s+)?(?:participant|actor)|participant)\s+([\w.-]+)(?:\s+as\s+(.+))?(?:\s+@\{.*})?$/i);
     if (participant) {
       result.addItem(participant[1], participant[2] || participant[1], line);
       return;
@@ -230,11 +227,6 @@ function parseSequence(rows, zen = false) {
     if (message) {
       result.addRelation(message[1], message[2], line);
       return;
-    }
-    if (zen) {
-      const call = text.match(/^(?:[\w<>]+\s+)?(?:[\w.-]+\s*=\s*)?(?:new\s+)?([A-Za-z_][\w.-]*)\s*\.\s*[\w$]+\s*\(/);
-      if (call) result.addItem(call[1], call[1], line);
-      else if (/^[A-Za-z_][\w.-]*$/.test(text)) result.addItem(text, text, line);
     }
   });
   return result;
@@ -581,7 +573,6 @@ const adapters = [
   { id: "flowchart", detect: /^(?:flowchart|graph)(?:-elk)?\b/i, mode: RELATIONAL, selectors: selectorSets.graph, vocabulary: ["Parents", "Children"], parse: parseGraph },
   { id: "block", detect: /^block-beta\b/i, mode: RELATIONAL, selectors: selectorSets.block, vocabulary: ["Incoming", "Outgoing"], parse: parseBlock },
   { id: "sequence", detect: /^sequenceDiagram\b/i, mode: RELATIONAL, selectors: selectorSets.sequence, vocabulary: ["Receives from", "Sends to"], parse: (rows) => parseSequence(rows) },
-  { id: "zenuml", detect: /^zenuml\b/i, mode: RELATIONAL, selectors: selectorSets.zenuml, vocabulary: ["Receives from", "Sends to"], parse: (rows) => parseSequence(rows, true) },
   { id: "class", detect: /^classDiagram\b/i, mode: RELATIONAL, selectors: selectorSets.class, vocabulary: ["Referenced by", "References"], parse: parseClass },
   { id: "state", detect: /^stateDiagram(?:-v2)?\b/i, mode: RELATIONAL, selectors: selectorSets.state, vocabulary: ["Previous states", "Next states"], parse: parseState },
   { id: "er", detect: /^erDiagram\b/i, mode: RELATIONAL, selectors: selectorSets.er, vocabulary: ["Related from", "Related to"], parse: parseER },
@@ -923,24 +914,6 @@ function extractSequence(svg, analysis) {
   return { targets, edges, groups: [] };
 }
 
-function extractZenUML(svg, analysis) {
-  const groups = { groups: [], byElement: new Map() };
-  const targets = [];
-  addTargets(targets, analysis, nodeCandidates(
-    svg,
-    'g.participant[data-participant]:not([data-participant="_STARTER_"])',
-    ".participant-label",
-    "zenuml",
-    ".participant-box",
-  ).map((candidate) => ({
-    ...candidate,
-    rendererKey: candidate.element.dataset.participant || candidate.rendererKey,
-  })), new Set(), groups, { allowUnmatched: true });
-  // Mermaid's ZenUML messages do not carry source/target attributes, so their
-  // semantic relations intentionally remain unpainted.
-  return { targets, edges: semanticEdges(analysis, targets), groups: [] };
-}
-
 function extractClass(svg, analysis) {
   const groups = { groups: [], byElement: new Map() };
   const targets = [];
@@ -1002,13 +975,16 @@ function extractRequirement(svg, analysis) {
 function extractArchitecture(svg, analysis) {
   const groups = groupData(svg, "g.architecture-group", ".architecture-group-label, text", "architecture-group");
   const targets = [];
-  addTargets(targets, analysis, elementsFor(svg, "g.architecture-service").map((element, index) => ({
-    element,
-    rendererKey: rawRendererKey(element, `architecture:${index + 1}`),
-    labels: textValues(element, ".text-inner-tspan"),
-    paintParts: elementsFor(element, ":scope svg rect, :scope svg circle, :scope svg ellipse, :scope svg line, :scope svg path, :scope svg polygon, :scope svg polyline")
-      .filter((part) => getComputedStyle(part).stroke !== "none" && getComputedStyle(part).strokeOpacity !== "0"),
-  })), new Set(), groups);
+  addTargets(targets, analysis, elementsFor(svg, "g.architecture-service").map((element, index) => {
+    const iconRoot = element.querySelector("svg > g");
+    const boundary = [...(iconRoot?.children || [])].find((child) => child.localName === "rect");
+    return {
+      element,
+      rendererKey: rawRendererKey(element, `architecture:${index + 1}`),
+      labels: textValues(element, ".text-inner-tspan"),
+      paintParts: boundary ? [boundary] : directPaintParts(element),
+    };
+  }), new Set(), groups);
   const edges = semanticEdges(analysis, targets);
   elementsFor(svg, "g.architecture-edges path.edge").forEach((path) => {
     const relation = relationForArchitectureID(analysis, path.id);
@@ -1226,7 +1202,6 @@ const svgExtractors = {
   swimlane: (svg, analysis) => extractFlowchart(svg, analysis, "swimlane"),
   block: (svg, analysis) => extractFlowchart(svg, analysis, "block"),
   sequence: extractSequence,
-  zenuml: extractZenUML,
   class: extractClass,
   state: extractState,
   er: extractER,

@@ -9,7 +9,6 @@ const adapterFixtures = {
   "flowchart-elk LR": "flowchart",
   "block-beta": "block",
   sequenceDiagram: "sequence",
-  zenuml: "zenuml",
   classDiagram: "class",
   "stateDiagram-v2": "state",
   erDiagram: "er",
@@ -132,7 +131,12 @@ try {
 
   const exampleKeys = await page.$$eval("#example-picker option", (options) => options.map((option) => option.value).filter(Boolean));
   const relationshipExamples = new Set(viewerFixtures.filter(({ source }) => analyzeDiagram(source).mode === "relational").map(({ id }) => id));
+  relationshipExamples.add("challenge-demo-service-topology");
   const orderedExamples = new Set(viewerFixtures.filter(({ source }) => analyzeDiagram(source).mode === "ordered").map(({ id }) => id));
+  const expectedExampleKeys = ["challenge-demo-service-topology", ...viewerFixtures.map(({ id }) => id)];
+  if (JSON.stringify(exampleKeys) !== JSON.stringify(expectedExampleKeys)) {
+    throw new Error(`Viewer examples are not the curated challenge set: ${JSON.stringify(exampleKeys)}`);
+  }
   const exampleResults = [];
   for (const key of exampleKeys) {
     await page.select("#example-picker", key);
@@ -184,9 +188,9 @@ try {
 
   const expectedInteractionTargets = {
     "flowchart-core": 4,
-    "sequence-core": 2,
+    "sequence-core": 6,
     "class-core": 3,
-    "state-core": 3,
+    "state-core": 8,
     "er-core": 2,
     "gantt-core": 3,
     "gitgraph-core": 3,
@@ -194,8 +198,6 @@ try {
     "mindmap-core": 7,
     "block-core": 4,
     "architecture-core": 3,
-    "zenuml-core": 3,
-    "mindmap-tidy-tree": 4,
   };
   const interactionFixtures = [];
   for (const fixture of diagramFixtures) {
@@ -329,7 +331,7 @@ try {
   }
 
   const linkedEdgeResults = {};
-  for (const [fixtureId, selectedKey] of [["mindmap-core", "Rendering"], ["mindmap-tidy-tree", "One"]]) {
+  for (const [fixtureId, selectedKey] of [["mindmap-core", "Rendering"]]) {
     await renderSource(fixtureById(fixtureId).source);
     await page.click(`#stage [data-graph-key="${selectedKey}"]`);
     linkedEdgeResults[fixtureId] = await page.evaluate(() => ({
@@ -366,6 +368,36 @@ try {
     throw new Error(`Class relationship paint lost hollow markers or terminal labels: ${JSON.stringify(classPaint)}`);
   }
 
+  await page.click('#stage [data-graph-key="Owner"]');
+  const aggregationPaint = await page.evaluate(() => {
+    const path = document.querySelector('#stage path.relation[data-id^="id_Owner_Dog_"]');
+    return {
+      lineWidth: getComputedStyle(path).strokeWidth,
+      originalLineWidth: path.style.getPropertyValue("--atlas-original-stroke-width"),
+      markerStart: path.getAttribute("marker-start"),
+    };
+  });
+  if (aggregationPaint.lineWidth !== aggregationPaint.originalLineWidth || !aggregationPaint.markerStart?.includes("atlas-outgoing")) {
+    throw new Error(`Class aggregation marker scaled with its highlighted edge: ${JSON.stringify(aggregationPaint)}`);
+  }
+
+  await renderSource(fixtureById("architecture-core").source);
+  await page.click('#stage [data-graph-key="api"]');
+  const architectureBoundaryPaint = await page.evaluate(() => {
+    const service = document.querySelector('#stage [data-graph-key="api"]');
+    const parts = [...service.querySelectorAll(".atlas-paint-part.atlas-selected")];
+    return {
+      parts: parts.map((part) => ({ tag: part.localName, width: part.getAttribute("width"), height: part.getAttribute("height") })),
+      internalIconParts: service.querySelectorAll("line.atlas-selected, path.atlas-selected, circle.atlas-selected, polygon.atlas-selected, polyline.atlas-selected").length,
+      stroke: parts[0] ? getComputedStyle(parts[0]).stroke : "",
+    };
+  });
+  if (architectureBoundaryPaint.parts.length !== 1 || architectureBoundaryPaint.parts[0].tag !== "rect"
+      || architectureBoundaryPaint.parts[0].width !== "80" || architectureBoundaryPaint.parts[0].height !== "80"
+      || architectureBoundaryPaint.internalIconParts !== 0 || architectureBoundaryPaint.stroke !== "rgb(220, 104, 79)") {
+    throw new Error(`Architecture selection did not stay on the service boundary: ${JSON.stringify(architectureBoundaryPaint)}`);
+  }
+
   await renderSource(fixtureById("er-core").source);
   await page.click('#stage [data-graph-key="CUSTOMER"]');
   const erPaint = await page.evaluate(() => ({
@@ -381,7 +413,7 @@ try {
 
   if (!await page.$eval("#group-index", (button) => button.classList.contains("active"))) await page.click("#group-index");
   const groupContracts = {
-    "state-core": ["Active", "Ungrouped"],
+    "state-core": ["Checkout", "Ungrouped"],
     "gantt-core": ["Build"],
     "block-core": ["group", "Ungrouped"],
     "architecture-core": ["Cloud", "Ungrouped"],
@@ -481,14 +513,18 @@ try {
       textFills: [...document.querySelectorAll("#stage .architecture-service text, #stage .architecture-group text")]
         .filter((label) => label.textContent.trim())
         .map((label) => getComputedStyle(label).fill),
+      groupBorders: [...document.querySelectorAll("#stage .architecture-groups > rect.node-bkg")]
+        .map((border) => getComputedStyle(border).stroke),
     }));
-    const iconStrokeChanged = result.iconParts.some(({ stroke }, index) => stroke !== before.iconParts[index].stroke);
-    const iconFillChanged = result.iconParts.some(({ fill }, index) => fill !== before.iconParts[index].fill);
+    const boundaryStrokeChanged = result.iconParts.some(({ stroke }, index) => stroke !== before.iconParts[index].stroke);
+    const boundaryFillChanged = result.iconParts.some(({ fill }, index) => fill !== before.iconParts[index].fill);
     const backgroundChanged = result.backgrounds.some((stroke, index) => stroke !== before.backgrounds[index]);
     const darkText = theme === "dark" && result.textFills.some((fill) => fill === "rgb(23, 32, 51)" || fill === "rgb(0, 0, 0)");
-    if (result.selected !== "client" || !result.iconParts.length || !iconStrokeChanged || iconFillChanged
-        || result.paintedBackgrounds || backgroundChanged || darkText) {
-      throw new Error(`Architecture selection included non-icon paint parts in ${theme} mode: ${JSON.stringify({ before, result })}`);
+    const darkGroupBorder = theme === "dark"
+      && (!result.groupBorders.length || result.groupBorders.some((stroke) => stroke === "rgb(0, 0, 0)"));
+    if (result.selected !== "client" || result.iconParts.length !== 1 || !boundaryStrokeChanged || boundaryFillChanged
+        || result.paintedBackgrounds || backgroundChanged || darkText || darkGroupBorder) {
+      throw new Error(`Architecture selection did not stay on the service boundary in ${theme} mode: ${JSON.stringify({ before, result })}`);
     }
     architecturePaint.push({ theme, ...result });
   }

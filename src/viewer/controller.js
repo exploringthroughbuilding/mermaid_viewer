@@ -1,10 +1,22 @@
 import { analyzeDiagram, extractDiagramInteraction } from "../mermaid/diagram-adapters.js";
-import { fixtureById, viewerFixtures } from "../fixtures/diagram-fixtures.js";
+import { challengeDemoPrimary } from "../demo/challenge-demo.js";
+import { viewerFixtureById, viewerFixtures } from "../fixtures/viewer-fixtures.js";
 import { configureMermaid, parseMermaid, renderMermaid } from "../mermaid/runtime.js";
 
-const requestedFixture = fixtureById(new URLSearchParams(window.location.search).get("fixture"));
-const sample = requestedFixture?.source || fixtureById("flowchart-core").source;
-const examples = Object.fromEntries(viewerFixtures.map((entry) => [entry.id, { label: `${entry.family} · ${entry.title}`, source: entry.source }]));
+const featuredExampleKey = "challenge-demo-service-topology";
+const requestedFixtureId = new URLSearchParams(window.location.search).get("fixture");
+const requestedFixture = viewerFixtureById(requestedFixtureId)
+  || (import.meta.env.DEV && requestedFixtureId
+    ? (await import("../fixtures/diagram-fixtures.js")).fixtureById(requestedFixtureId)
+    : undefined);
+const sample = requestedFixture?.source || challengeDemoPrimary.source;
+const examples = {
+  [featuredExampleKey]: {
+    label: "Checkout architecture · 31-service topology",
+    source: challengeDemoPrimary.source,
+  },
+  ...Object.fromEntries(viewerFixtures.map((entry) => [entry.id, { label: `${entry.family} · ${entry.title}`, source: entry.source }])),
+};
 
 const elements = {
   rail: document.querySelector(".rail"),
@@ -55,6 +67,7 @@ let diagramAnalysis = analyzeDiagram(sample);
 let diagramKind = diagramAnalysis.id;
 const collapsedGroupKeys = new Set();
 let markdownBlocks = [];
+let markdownLibraryIds = [];
 let renderSequence = 0;
 const sensitivityStorageKey = "mermaid-atlas-interaction-settings";
 const defaultSensitivity = { zoom: 1, pan: 1, device: "trackpad" };
@@ -323,6 +336,7 @@ function updateBlockPicker() {
 function loadSource(value) {
   const blocks = extractMermaidBlocks(value);
   markdownBlocks = blocks;
+  markdownLibraryIds = [];
   elements.source.value = blocks[0] || value;
   updateSourceMeta();
   updateBlockPicker();
@@ -336,27 +350,40 @@ function populateExamples() {
     (result[mode] ||= []).push(entry);
     return result;
   }, {});
-  elements.examplePicker.innerHTML = `<option value="">Examples</option>${Object.entries(groups).map(([mode, fixtures]) => (
+  const featured = `<optgroup label="Featured challenge demo"><option value="${featuredExampleKey}">${examples[featuredExampleKey].label}</option></optgroup>`;
+  elements.examplePicker.innerHTML = `<option value="">Load diagram</option>${featured}${Object.entries(groups).map(([mode, fixtures]) => (
     `<optgroup label="${labels[mode]}">${fixtures.map(({ id }) => `<option value="${id}">${examples[id].label}</option>`).join("")}</optgroup>`
   )).join("")}`;
+}
+
+function announceActiveSource(reason, diagramId = null) {
+  window.dispatchEvent(new CustomEvent("atlas-active-source-change", {
+    detail: { reason, source: elements.source.value, diagramId },
+  }));
 }
 
 function loadExample(key) {
   const example = examples[key];
   if (!example) return;
   markdownBlocks = [];
+  markdownLibraryIds = [];
   elements.blockPickerWrap.hidden = true;
   elements.examplePicker.value = key;
   elements.source.value = example.source;
   updateSourceMeta();
   clearSelection();
+  announceActiveSource("example");
   renderDiagram();
 }
 
 function updateSourceFromEditor() {
   const pastedBlocks = extractMermaidBlocks(elements.source.value);
   if (pastedBlocks.length) {
-    loadSource(elements.source.value);
+    const markdown = elements.source.value;
+    loadSource(markdown);
+    window.dispatchEvent(new CustomEvent("atlas-file-imported", {
+      detail: { text: markdown, name: "pasted-markdown.md" },
+    }));
     return;
   }
   if (markdownBlocks.length) {
@@ -1104,8 +1131,10 @@ elements.source.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") renderDiagram();
 });
 elements.blockPicker.addEventListener("change", () => {
-  elements.source.value = markdownBlocks[Number(elements.blockPicker.value) || 0] || "";
+  const selectedIndex = Number(elements.blockPicker.value) || 0;
+  elements.source.value = markdownBlocks[selectedIndex] || "";
   updateSourceMeta();
+  announceActiveSource("markdown-block", markdownLibraryIds[selectedIndex] || null);
   renderDiagram();
 });
 elements.render.addEventListener("click", renderDiagram);
@@ -1118,6 +1147,9 @@ elements.file.addEventListener("change", async () => {
   // so an agent can list them by name instead of only seeing the active block.
   window.dispatchEvent(new CustomEvent("atlas-file-imported", { detail: { text, name: file.name } }));
   await renderDiagram();
+});
+window.addEventListener("atlas-library-imported", (event) => {
+  markdownLibraryIds = Array.isArray(event.detail?.diagramIds) ? event.detail.diagramIds.slice() : [];
 });
 elements.examplePicker.addEventListener("change", () => loadExample(elements.examplePicker.value));
 elements.search.addEventListener("input", renderNodeList);
@@ -1308,27 +1340,55 @@ function diagramSummary() {
   };
 }
 
-/** Snapshot the editor so any agent edit is reversible in one step. */
-function pushSourceSnapshot(label) {
-  sourceHistory.push({ source: elements.source.value, label, at: Date.now() });
+function historyKey(value) {
+  return value || "editor";
+}
+
+/** Snapshot both sides of an agent edit so undo cannot overwrite later human work. */
+function pushSourceSnapshot(label, expectedSource, historyContext) {
+  sourceHistory.push({
+    source: elements.source.value,
+    expectedSource,
+    historyContext: historyKey(historyContext),
+    label,
+    at: Date.now(),
+  });
   if (sourceHistory.length > maxHistoryDepth) sourceHistory.shift();
 }
 
-async function setSourceAndRender(source, { label = "edit", snapshot = true } = {}) {
-  if (snapshot) pushSourceSnapshot(label);
+async function setSourceAndRender(source, { label = "edit", snapshot = true, historyContext = null } = {}) {
+  if (snapshot) pushSourceSnapshot(label, source, historyContext);
   elements.source.value = source;
   updateSourceFromEditor();
   await renderDiagram();
   return diagramSummary();
 }
 
-async function undoSourceChange() {
-  const previous = sourceHistory.pop();
+async function undoSourceChange({ historyContext = null } = {}) {
+  const key = historyKey(historyContext);
+  let snapshotIndex = -1;
+  for (let index = sourceHistory.length - 1; index >= 0; index -= 1) {
+    if (sourceHistory[index].historyContext === key) {
+      snapshotIndex = index;
+      break;
+    }
+  }
+  if (snapshotIndex < 0) return null;
+  const previous = sourceHistory[snapshotIndex];
+  if (elements.source.value !== previous.expectedSource) {
+    return {
+      ok: false,
+      reason: "source_changed",
+      label: previous.label,
+      message: "The source changed after this agent patch. Undo was stopped to protect the newer human or diagram changes.",
+    };
+  }
+  sourceHistory.splice(snapshotIndex, 1);
   if (!previous) return null;
   elements.source.value = previous.source;
   updateSourceFromEditor();
   await renderDiagram();
-  return { label: previous.label, restoredAt: previous.at, ...diagramSummary() };
+  return { ok: true, label: previous.label, restoredAt: previous.at, ...diagramSummary() };
 }
 
 export const atlasApi = {
@@ -1336,7 +1396,10 @@ export const atlasApi = {
   getSummary: diagramSummary,
   getSource: () => elements.source.value,
   getSelectedKey: () => selectedKey,
-  historyDepth: () => sourceHistory.length,
+  historyDepth: (historyContext = null) => {
+    const key = historyKey(historyContext);
+    return sourceHistory.filter((entry) => entry.historyContext === key).length;
+  },
   setSourceAndRender,
   undoSourceChange,
   pushSourceSnapshot,

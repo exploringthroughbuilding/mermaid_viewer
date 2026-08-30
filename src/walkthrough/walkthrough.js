@@ -41,7 +41,7 @@ function ensureBar() {
       <p class="walkthrough-node"></p>
       <p class="walkthrough-caption"></p>
     </div>
-    <div class="walkthrough-progress" aria-hidden="true"></div>
+    <nav class="walkthrough-progress" aria-label="Walkthrough steps"></nav>
     <div class="walkthrough-controls">
       <button type="button" class="walkthrough-prev">Back</button>
       <output class="walkthrough-counter" aria-live="polite"></output>
@@ -116,6 +116,17 @@ function renderBar(index) {
     .join("");
 }
 
+function restoreAfterRender() {
+  if (!tour) return;
+  const graph = atlasApi.getGraph();
+  if (tour.steps.some(({ nodeId }) => !graph.nodes.has(nodeId))) {
+    endWalkthrough();
+    return;
+  }
+
+  void goToStep(tour.index);
+}
+
 export async function goToStep(index) {
   if (!tour) return null;
   const bounded = Math.max(0, Math.min(index, tour.steps.length - 1));
@@ -180,9 +191,11 @@ export async function startWalkthrough({ title = "Guided walkthrough", steps = [
     })),
   };
 
-  // A re-render replaces every SVG element the tour points at.
+  // A re-render replaces every SVG element the tour points at. Rebind the
+  // active step when its route still exists; source changes that remove a step
+  // end the walkthrough rather than leaving stale controls behind.
   disposeRenderSubscription?.();
-  disposeRenderSubscription = atlasApi.onRender(() => endWalkthrough());
+  disposeRenderSubscription = atlasApi.onRender(restoreAfterRender);
 
   await goToStep(0);
   return { ok: true, title, total: tour.steps.length, disconnectedSteps: missingEdges };

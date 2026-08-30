@@ -1,8 +1,7 @@
 const maxEntries = 40;
 const entries = [];
-let panel = null;
+let view = null;
 let listElement = null;
-let collapsed = false;
 
 function escapeHTML(value) {
   return String(value ?? "").replace(/[&<>"']/g, (character) => ({
@@ -10,38 +9,25 @@ function escapeHTML(value) {
   })[character]);
 }
 
-function syncTheme() {
-  if (!panel) return;
-  panel.dataset.theme = document.querySelector(".app-root")?.dataset.theme || "light";
-}
+function ensureView() {
+  if (view?.trigger?.isConnected) return view;
 
-window.addEventListener("atlas-theme-change", syncTheme);
+  const trigger = document.querySelector("#agent-activity-trigger");
+  const dialog = document.querySelector("#agent-activity-dialog");
+  listElement = document.querySelector("#agent-activity-list");
+  if (!trigger || !dialog || !listElement) return null;
 
-function ensurePanel() {
-  if (panel) return panel;
-  panel = document.createElement("aside");
-  panel.className = "agent-activity";
-  panel.setAttribute("aria-label", "Agent activity");
-  panel.innerHTML = `
-    <header class="agent-activity-head">
-      <span class="agent-activity-dot" aria-hidden="true"></span>
-      <p>Agent activity</p>
-      <span class="agent-activity-count">0</span>
-      <button type="button" class="agent-activity-toggle" aria-expanded="true" aria-label="Collapse agent activity">–</button>
-    </header>
-    <ol class="agent-activity-list" aria-live="polite"></ol>`;
-  document.body.append(panel);
-  syncTheme();
-  listElement = panel.querySelector(".agent-activity-list");
-  panel.querySelector(".agent-activity-toggle").addEventListener("click", () => {
-    collapsed = !collapsed;
-    panel.classList.toggle("collapsed", collapsed);
-    const toggle = panel.querySelector(".agent-activity-toggle");
-    toggle.textContent = collapsed ? "+" : "–";
-    toggle.setAttribute("aria-expanded", String(!collapsed));
-    toggle.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} agent activity`);
+  view = {
+    trigger,
+    dialog,
+    count: document.querySelector("#agent-activity-count"),
+    latestAction: document.querySelector("#latest-agent-action"),
+    latestTime: document.querySelector("#latest-agent-time"),
+  };
+  trigger.addEventListener("click", () => {
+    if (!dialog.open) dialog.showModal();
   });
-  return panel;
+  return view;
 }
 
 function summarizeInput(input) {
@@ -52,8 +38,20 @@ function summarizeInput(input) {
 }
 
 function paint() {
-  const view = ensurePanel();
-  view.querySelector(".agent-activity-count").textContent = String(entries.length);
+  const activityView = ensureView();
+  if (!activityView) return;
+
+  const latest = entries.at(-1);
+  activityView.count.textContent = `${entries.length} ${entries.length === 1 ? "action" : "actions"}`;
+  activityView.trigger.disabled = entries.length === 0;
+  activityView.trigger.classList.remove("idle", "running", "ok", "failed");
+  activityView.trigger.classList.add(latest?.status || "idle");
+  activityView.latestAction.textContent = latest?.name || "No actions yet";
+  activityView.latestTime.textContent = latest ? (latest.duration != null ? `${latest.duration}ms` : "running") : "";
+  activityView.trigger.setAttribute(
+    "aria-label",
+    latest ? `Open agent activity. Latest action: ${latest.name}, ${latest.status}.` : "Open agent activity. No agent actions yet.",
+  );
   listElement.innerHTML = entries
     .slice()
     .reverse()
@@ -74,7 +72,7 @@ function paint() {
  * change what someone is looking at should never be invisible to them.
  */
 export function logToolCall(name, input) {
-  ensurePanel();
+  ensureView();
   const entry = { name, input: summarizeInput(input), status: "running", detail: "", startedAt: performance.now(), duration: null };
   entries.push(entry);
   if (entries.length > maxEntries) entries.shift();
@@ -96,7 +94,7 @@ export function logToolCall(name, input) {
 }
 
 export function announceReady(toolNames, mode) {
-  ensurePanel();
+  ensureView();
   entries.push({
     name: `webmcp:${mode}`,
     input: `${toolNames.length} tools registered`,

@@ -1,3 +1,5 @@
+import { viewerFixtures } from "./viewer-fixtures.js";
+
 const fixture = (id, family, title, source, options = {}) => ({
   id,
   family,
@@ -9,14 +11,7 @@ const fixture = (id, family, title, source, options = {}) => ({
 });
 
 export const diagramFixtures = [
-  fixture("flowchart-core", "Flowchart", "Shapes, subgraphs, links, and classes", `flowchart LR
-  subgraph S[Pipeline]
-    A([Start]) -->|input| B{Valid?}
-  end
-  B -->|yes| C[(Store)]
-  B -. no .-> D[Fix]
-  classDef hot fill:#fee,stroke:#900
-  class B hot`, { features: ["subgraph", "shapes", "links", "classDef"], viewer: true }),
+  ...viewerFixtures,
   fixture("flowchart-legacy", "Flowchart", "Legacy graph declaration", `graph TD
   A[Legacy declaration] --> B[Supported]`, { features: ["graph alias"] }),
   fixture("swimlane-core", "Swimlane", "Lanes and cross-lane handoff", `swimlane-beta LR
@@ -27,46 +22,6 @@ export const diagramFixtures = [
     C{Valid?} --> D[Store]
   end
   B -->|request| C`, { stability: "experimental", features: ["lanes", "handoff", "decision"] }),
-  fixture("sequence-core", "Sequence", "Actors, activation, notes, and alternatives", `sequenceDiagram
-  autonumber
-  actor U as User
-  participant API
-  U->>+API: Request
-  Note right of API: Validate
-  alt valid
-    API-->>U: OK
-  else invalid
-    API-->>-U: Error
-  end`, { features: ["actor", "autonumber", "activation", "note", "alt"], viewer: true }),
-  fixture("class-core", "Class", "Members, stereotypes, and cardinality", `classDiagram-v2
-  class Animal {
-    <<interface>>
-    +String name
-    +speak() String
-  }
-  class Dog
-  class Owner
-  Animal <|.. Dog : implements
-  Owner "1" o-- "0..*" Dog : owns`, { features: ["members", "stereotype", "realization", "aggregation"], viewer: true }),
-  fixture("state-core", "State", "Composite states, notes, and transitions", `stateDiagram-v2
-  [*] --> Active
-  state Active {
-    [*] --> Idle
-    Idle --> Busy : work
-    Busy --> Idle
-  }
-  note right of Active : Composite state
-  Active --> [*]`, { features: ["initial", "composite", "note", "final"], viewer: true }),
-  fixture("er-core", "Entity relationship", "Cardinality, attributes, and keys", `erDiagram
-  CUSTOMER ||--o{ ORDER : places
-  CUSTOMER {
-    string id PK
-    string email UK
-  }
-  ORDER {
-    int id PK
-    decimal total
-  }`, { features: ["cardinality", "attributes", "keys"], viewer: true }),
   fixture("requirement-core", "Requirement", "Requirements, elements, and relationships", `requirementDiagram
   requirement render_req {
     id: 1
@@ -93,21 +48,21 @@ export const diagramFixtures = [
   section Build
   Design :done, d, 2026-01-01, 3d
   Code :active, c, after d, 5d
-  Ship :milestone, after c, 0d`, { features: ["dateFormat", "excludes", "after", "milestone"], viewer: true }),
+  Ship :milestone, after c, 0d`, { features: ["dateFormat", "excludes", "after", "milestone"] }),
   fixture("gitgraph-core", "Git graph", "Branches, tags, checkout, and merge", `gitGraph LR:
   commit id: "Base" tag: "v1"
   branch feature
   checkout feature
   commit id: "Work"
   checkout main
-  merge feature id: "Merge"`, { features: ["orientation", "tag", "branch", "merge"], viewer: true }),
+  merge feature id: "Merge"`, { features: ["orientation", "tag", "branch", "merge"] }),
   fixture("timeline-core", "Timeline", "Sections and multiple events", `timeline
   title Releases
   section Core
     2024 : Prototype : Pan and zoom
     2025 : Search
   section Plugins
-    2026 : ELK : ZenUML`, { features: ["section", "period", "multiple events"], viewer: true }),
+    2026 : ELK : WebMCP`, { features: ["section", "period", "multiple events"] }),
   fixture("kanban-core", "Kanban", "Columns, tasks, and metadata", `kanban
   todo[Todo]
     docs[Write docs]@{ assigned: Alice, ticket: DOC-1, priority: High }
@@ -117,20 +72,20 @@ export const diagramFixtures = [
     setup[Set up viewer]`, { stability: "evolving", features: ["column", "task", "metadata"] }),
   fixture("pie-core", "Pie", "Title, values, and displayed data", `pie showData title Share
   "Core" : 60
-  "Plugins" : 40`, { features: ["showData", "title", "values"], viewer: true }),
+  "Plugins" : 40`, { features: ["showData", "title", "values"] }),
   fixture("quadrant-core", "Quadrant", "Axes, labels, and points", `quadrantChart
   title Priorities
   x-axis Hard --> Easy
   y-axis Low --> High
   quadrant-1 Do now
   A: [0.8, 0.9]
-  B: [0.3, 0.4]`, { features: ["axes", "quadrant label", "points"], viewer: true }),
+  B: [0.3, 0.4]`, { features: ["axes", "quadrant label", "points"] }),
   fixture("xychart-core", "XY chart", "Horizontal bar and line series", `xychart-beta horizontal
   title "Latency"
   x-axis [Small, Medium, Large]
   y-axis "ms" 0 --> 100
   bar [20, 45, 80]
-  line [15, 35, 70]`, { stability: "evolving", features: ["horizontal", "categorical axis", "bar", "line"], viewer: true }),
+  line [15, 35, 70]`, { stability: "evolving", features: ["horizontal", "categorical axis", "bar", "line"] }),
   fixture("sankey-core", "Sankey", "CSV flow data", `sankey-beta
 Source,Parser,10
 Parser,SVG,7
@@ -142,14 +97,6 @@ Parser,Error,3`, { stability: "evolving", features: ["CSV", "weighted flow"] }),
   curve plugins["Plugins"]{syntax: 7, render: 6, layout: 9}
   graticule polygon
   ticks 4`, { stability: "experimental", features: ["axis", "positional curve", "keyed curve", "graticule"] }),
-  fixture("mindmap-core", "Mindmap", "Hierarchy and node shapes", `mindmap
-  root((Atlas))
-    Rendering
-      Mermaid
-      Plugins
-    Explore
-      Search
-      Zoom`, { features: ["hierarchy", "root shape"], viewer: true }),
   fixture("block-core", "Block", "Columns, space, composite blocks, and links", `block-beta
   columns 3
   A["Source"] space B["Parse"]
@@ -157,18 +104,11 @@ Parser,Error,3`, { stability: "evolving", features: ["CSV", "weighted flow"] }),
   block:group:3
     columns 2
     C["Inspect"] D["Zoom"]
-  end`, { stability: "evolving", features: ["columns", "space", "composite block"], viewer: true }),
+  end`, { stability: "evolving", features: ["columns", "space", "composite block"] }),
   fixture("packet-core", "Packet", "Explicit ranges and relative bit counts", `packet-beta
   0-3: "Version"
   +8: "Length"
   12-31: "Payload"`, { stability: "evolving", features: ["range", "relative bits"] }),
-  fixture("architecture-core", "Architecture", "Groups, services, icons, ports, and edges", `architecture-beta
-  group cloud(cloud)[Cloud]
-  service client(internet)[Client]
-  service api(server)[API] in cloud
-  service db(database)[DB] in cloud
-  client:R --> L:api
-  api:B --> T:db`, { stability: "evolving", features: ["group", "service", "icon", "ports"], viewer: true }),
   fixture("treeview-core", "Tree view", "Directories, files, descriptions, and classes", `treeView-beta
   project/ ## root
     src/:::highlight
@@ -275,19 +215,6 @@ Parser,Error,3`, { stability: "evolving", features: ["CSV", "weighted flow"] }),
     Container(source, "Mermaid", "JavaScript")
   }
   Rel(viewer, source, "Loads")`, { stability: "experimental", features: ["deployment node", "container"] }),
-  fixture("zenuml-core", "ZenUML", "Participants, calls, conditions, and replies", `zenuml
-  title Request
-  @Actor User
-  API as Service
-  User->API: Submit
-  API.Validate() {
-    if(valid) {
-      result = Store.Save()
-    } else {
-      return error
-    }
-  }
-  API->User: Done`, { stability: "experimental", features: ["annotator", "alias", "sync call", "if", "return"], viewer: true }),
   fixture("info-core", "Info", "Mermaid runtime information", `info
   showInfo`, { features: ["showInfo"] }),
   ...["elk", "elk.layered", "elk.stress", "elk.force", "elk.mrtree", "elk.sporeOverlap"].map((layout) => fixture(
@@ -301,23 +228,14 @@ config:
 flowchart LR
   A --> B
   A --> C`,
-    { stability: "plugin", features: [layout], viewer: layout === "elk.force" },
+    { stability: "plugin", features: [layout] },
   )),
   fixture("flowchart-elk-declaration", "ELK layout", "flowchart-elk declaration", `flowchart-elk LR
   A --> B
   A --> C`, { stability: "plugin", features: ["declaration alias"] }),
-  fixture("mindmap-tidy-tree", "Tidy-tree layout", "Bidirectional mindmap layout", `---
-config:
-  layout: tidy-tree
----
-mindmap
-  root((Root))
-    One
-      Leaf
-    Two`, { stability: "plugin", features: ["tidy-tree"], viewer: true }),
 ];
 
-export const viewerFixtures = diagramFixtures.filter(({ viewer }) => viewer);
+export { viewerFixtures };
 
 export function fixtureById(id) {
   return diagramFixtures.find((entry) => entry.id === id);

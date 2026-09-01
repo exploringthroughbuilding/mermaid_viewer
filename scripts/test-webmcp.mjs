@@ -58,7 +58,12 @@ try {
   await page.waitForFunction(() => Boolean(document.modelContext), { timeout: 20000 });
   const registered = await page.evaluate(async () => {
     const tools = await listRegisteredTools();
-    return tools.map((tool) => ({ name: tool.name, title: tool.title, annotations: tool.annotations }));
+    return tools.map((tool) => ({
+      name: tool.name,
+      title: tool.title,
+      annotations: tool.annotations,
+      outputSchema: tool.outputSchema,
+    }));
   });
   const expected = [
     "get_atlas_guide", "list_diagrams", "open_diagram", "search_graph", "get_neighborhood",
@@ -92,7 +97,11 @@ try {
       raw = await document.modelContext.executeTool(descriptor, args);
     }
     const result = typeof raw === "string" ? JSON.parse(raw) : raw;
-    return { text: result?.content?.[0]?.text ?? "" };
+    return {
+      text: result?.content?.[0]?.text ?? "",
+      structuredContent: result?.structuredContent ?? null,
+      isError: result?.isError === true,
+    };
   }, name, input);
 
   const payloadOf = (text) => {
@@ -101,7 +110,15 @@ try {
     try { return JSON.parse(text.slice(brace + 2)); } catch { return null; }
   };
 
-  const guide = payloadOf((await call("get_atlas_guide")).text);
+  const guideResult = await call("get_atlas_guide");
+  const guide = payloadOf(guideResult.text);
+  check("tool results expose structured content alongside compatible text",
+    guideResult.structuredContent?.ok === true
+      && guideResult.structuredContent?.data?.workflows?.length === guide?.workflows?.length,
+    JSON.stringify(guideResult.structuredContent && {
+      ok: guideResult.structuredContent.ok,
+      workflows: guideResult.structuredContent.data?.workflows?.length,
+    }));
   check("get_atlas_guide provides app-authored workflows and safety guidance",
     guide?.workflows?.some(({ id, calls }) => id === "trace_request" && calls.includes("create_walkthrough"))
       && guide?.guidelines?.some((guideline) => guideline.includes("Do not call apply_patch"))
@@ -138,7 +155,8 @@ try {
   check("list_diagrams sees every imported Markdown block by heading", imported.length === 4, imported.map(({ title }) => title).join(" | "));
 
   await page.select("#block-picker", "1");
-  await page.waitForFunction(() => document.querySelector("#source")?.value.startsWith("sequenceDiagram"));
+  await page.waitForFunction(() => document.querySelector("#source")?.value.startsWith("sequenceDiagram")
+    && document.querySelector("#status")?.textContent === "Diagram ready");
   const selectedBlockLibrary = payloadOf((await call("list_diagrams", { limit: 20 })).text);
   const selectedBlock = selectedBlockLibrary?.diagrams?.find(({ id }) => id === selectedBlockLibrary?.active?.libraryId);
   check("human Markdown block selection updates WebMCP active state",
@@ -172,6 +190,14 @@ try {
 
   // --- walkthrough --------------------------------------------------------
   const steps = shortest.map((nodeId, index) => ({ nodeId, caption: `Step ${index + 1}: traffic reaches ${nodeId}.` }));
+  const disconnectedTour = await call("create_walkthrough", {
+    title: "Invalid jump",
+    steps: [steps[0], steps.at(-1)],
+  });
+  check("create_walkthrough rejects disconnected steps by default",
+    disconnectedTour.isError === true
+      && disconnectedTour.structuredContent?.error?.details?.reason === "disconnected_steps",
+    disconnectedTour.text.split("\n")[0]);
   const tour = await call("create_walkthrough", { title: "Checkout to payment database", steps });
   check("create_walkthrough starts a tour", !tour.text.startsWith("ERROR"), tour.text.split("\n")[0]);
 
@@ -250,7 +276,10 @@ try {
     description: "ambiguous same-line operations",
   });
   check("apply_patch rejects ambiguous same-line operations",
-    ambiguousPatch.text.startsWith("ERROR") && await page.evaluate((source) => document.querySelector("#source").value === source, beforePatch),
+    ambiguousPatch.isError === true
+      && ambiguousPatch.structuredContent?.ok === false
+      && ambiguousPatch.text.startsWith("ERROR")
+      && await page.evaluate((source) => document.querySelector("#source").value === source, beforePatch),
     ambiguousPatch.text.split("\n")[0].slice(0, 80));
 
   const patched = await call("apply_patch", {
@@ -268,7 +297,9 @@ try {
   });
   const sourceAfterReject = await page.evaluate(() => document.querySelector("#source").value);
   check("invalid patch is rejected without changing the source",
-    rejected.text.startsWith("ERROR") && sourceAfterReject === sourceBeforeReject,
+    rejected.isError === true
+      && rejected.structuredContent?.error?.details?.sourceExcerpt?.length > 0
+      && sourceAfterReject === sourceBeforeReject,
     rejected.text.split("\n")[0].slice(0, 80));
 
   const humanRevision = `${sourceBeforeReject}\n%% human note after agent patch`;
@@ -276,8 +307,21 @@ try {
     textarea.value = source;
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
   }, humanRevision);
+  const staleSearch = await call("search_graph", { query: "payment" });
+  const guardedSwitch = await call("open_diagram", {
+    diagramId: imported.find((entry) => entry.title === "Checkout Request Flow")?.id,
+  });
+  check("graph tools reject stale results and diagram switching protects unrendered edits",
+    staleSearch.isError === true
+      && guardedSwitch.isError === true
+      && await page.evaluate((source) => document.querySelector("#source").value === source, humanRevision),
+    `${staleSearch.text.split("\n")[0]} | ${guardedSwitch.text.split("\n")[0]}`);
   await page.click("#render");
   await page.waitForFunction(() => document.querySelector("#status")?.textContent === "Diagram ready");
+  const customCanvas = payloadOf((await call("list_diagrams", { limit: 20 })).text)?.active;
+  check("human source edits clear stale active-library identity",
+    customCanvas?.kind === "editor" && customCanvas?.libraryId === null && customCanvas?.editorIsRendered === true,
+    JSON.stringify(customCanvas));
   const protectedUndo = await call("undo_last_change");
   const sourceAfterProtectedUndo = await page.evaluate(() => document.querySelector("#source").value);
   check("undo refuses to overwrite a newer human edit",

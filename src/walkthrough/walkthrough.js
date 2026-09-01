@@ -170,16 +170,21 @@ export function activeWalkthrough() {
  * front rather than failing silently mid-walk, and the caller gets told exactly
  * which ones were wrong.
  */
-export async function startWalkthrough({ title = "Guided walkthrough", steps = [] } = {}) {
+export async function startWalkthrough({ title = "Guided walkthrough", steps = [], requireConnected = true } = {}) {
   const graph = atlasApi.getGraph();
   if (!steps.length) return { ok: false, reason: "no_steps" };
 
   const unknown = steps.filter(({ nodeId }) => !graph.nodes.has(nodeId)).map(({ nodeId }) => nodeId);
   if (unknown.length) return { ok: false, reason: "unknown_nodes", unknown };
 
-  const missingEdges = steps.slice(1)
-    .filter((entry, index) => !edgeBetween(steps[index].nodeId, entry.nodeId))
-    .map((entry, index) => `${steps[index].nodeId} -> ${entry.nodeId}`);
+  const missingEdges = steps.slice(1).flatMap((entry, index) => (
+    edgeBetween(steps[index].nodeId, entry.nodeId)
+      ? []
+      : [`${steps[index].nodeId} -> ${entry.nodeId}`]
+  ));
+  if (requireConnected && missingEdges.length) {
+    return { ok: false, reason: "disconnected_steps", disconnectedSteps: missingEdges };
+  }
 
   tour = {
     title,

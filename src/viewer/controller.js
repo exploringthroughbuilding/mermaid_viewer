@@ -1,4 +1,8 @@
-import { analyzeDiagram, extractDiagramInteraction } from "../mermaid/diagram-adapters.js";
+import {
+  analyzeDiagram,
+  extractDiagramInteraction,
+  findUntraversableGroupEdges,
+} from "../mermaid/diagram-adapters.js";
 import { challengeDemoPrimary } from "../demo/challenge-demo.js";
 import { viewerFixtureById, viewerFixtures } from "../fixtures/viewer-fixtures.js";
 import { configureMermaid, parseMermaid, renderMermaid } from "../mermaid/runtime.js";
@@ -60,7 +64,10 @@ const elements = {
 
 let transform = { x: 0, y: 0, scale: 1 };
 let transformRevision = 0;
-let graph = { nodes: new Map(), edges: [], incoming: new Map(), outgoing: new Map(), markerCache: new Map() };
+let graph = {
+  nodes: new Map(), edges: [], incoming: new Map(), outgoing: new Map(), markerCache: new Map(), untraversableEdges: [],
+};
+let renderedSource = "";
 let selectedKey = null;
 let keyboardNavigation = null;
 let diagramAnalysis = analyzeDiagram(sample);
@@ -516,7 +523,9 @@ function indexDiagramInteraction() {
     node.connections = new Set([...(incoming.get(key) || []), ...(outgoing.get(key) || [])]).size;
   });
 
-  graph = { nodes, edges, incoming, outgoing, markerCache: new Map() };
+  const untraversableEdges = findUntraversableGroupEdges(diagramAnalysis, edges);
+
+  graph = { nodes, edges, incoming, outgoing, markerCache: new Map(), untraversableEdges };
   elements.stats.textContent = nodes.size
     ? `${nodes.size.toLocaleString()} items · ${edges.length.toLocaleString()} relations`
     : `${diagramKind} · canvas view`;
@@ -1026,6 +1035,7 @@ async function renderDiagram(preserveView = false) {
       });
     }
     setStatus("Diagram ready", "ready");
+    renderedSource = source;
     notifyRendered();
   } catch (error) {
     elements.stage.innerHTML = "";
@@ -1034,7 +1044,10 @@ async function renderDiagram(preserveView = false) {
     elements.canvasEmpty.querySelector("small").textContent = error?.message?.split("\n")[0] || "Check the syntax and try again.";
     setStatus("Render failed", "error");
     elements.stats.textContent = "Invalid diagram";
-    graph = { nodes: new Map(), edges: [], incoming: new Map(), outgoing: new Map(), markerCache: new Map() };
+    graph = {
+      nodes: new Map(), edges: [], incoming: new Map(), outgoing: new Map(), markerCache: new Map(), untraversableEdges: [],
+    };
+    renderedSource = "";
     renderNodeList();
   } finally {
     elements.render.disabled = false;
@@ -1124,6 +1137,9 @@ elements.viewport.addEventListener("click", (event) => {
 
 elements.source.addEventListener("input", () => {
   updateSourceFromEditor();
+  // Record the editor identity immediately. WebMCP separately reports whether
+  // this source has reached the rendered canvas yet.
+  announceActiveSource("editor");
   elements.examplePicker.value = "";
 });
 elements.source.addEventListener("scroll", () => updateSourceLineHighlight());
@@ -1395,6 +1411,7 @@ export const atlasApi = {
   getGraph: () => graph,
   getSummary: diagramSummary,
   getSource: () => elements.source.value,
+  getRenderedSource: () => renderedSource,
   getSelectedKey: () => selectedKey,
   historyDepth: (historyContext = null) => {
     const key = historyKey(historyContext);

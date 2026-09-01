@@ -78,6 +78,23 @@ try {
     throw new Error(`Initial render did not finish: ${JSON.stringify(state)}\n${browserErrors.join("\n")}`);
   });
 
+  const branding = await page.evaluate(() => {
+    const favicon = document.querySelector('link[rel="icon"]');
+    const logo = document.querySelector("img.brand-mark");
+    const bounds = logo?.getBoundingClientRect();
+    return {
+      favicon: favicon?.getAttribute("href"),
+      logo: logo?.getAttribute("src"),
+      loaded: Boolean(logo?.complete && logo.naturalWidth > 0),
+      width: bounds?.width,
+      height: bounds?.height,
+    };
+  });
+  if (branding.favicon !== "/favicon.svg" || branding.logo !== branding.favicon
+    || !branding.loaded || branding.width !== 40 || branding.height !== 40) {
+    throw new Error(`Header logo does not match the loaded favicon: ${JSON.stringify(branding)}`);
+  }
+
   const panelSizing = await page.evaluate(() => ({
     indexHeight: document.querySelector(".index-panel").getBoundingClientRect().height,
     selectionHeight: document.querySelector(".inspector").getBoundingClientRect().height,
@@ -1050,7 +1067,7 @@ E[Client] --> A`;
   }
   await experimentPage.close();
 
-  console.log(JSON.stringify({ fixturePath, adapterCoverage: `${adapterCoverage.length} declarations`, debugResults, panelSizing, exampleResults, interactionFixtures, highlightedSource, resizedPanels, resizedSidebar, savedSensitivity, indexControls, collapsedGroup, expandedGroup, sourceLayout, rendered, selectionVerified: true, keyboardNavigation, selectionPreservedAfterDrag, indexZoomVerified, zoomCenter, zoomRatio, nativePinchRatio, trackpadMovement, panDistance }, null, 2));
+  console.log(JSON.stringify({ fixturePath, adapterCoverage: `${adapterCoverage.length} declarations`, branding, debugResults, panelSizing, exampleResults, interactionFixtures, highlightedSource, resizedPanels, resizedSidebar, savedSensitivity, indexControls, collapsedGroup, expandedGroup, sourceLayout, rendered, selectionVerified: true, keyboardNavigation, selectionPreservedAfterDrag, indexZoomVerified, zoomCenter, zoomRatio, nativePinchRatio, trackpadMovement, panDistance }, null, 2));
 } finally {
   await browser?.close();
   await server.close();

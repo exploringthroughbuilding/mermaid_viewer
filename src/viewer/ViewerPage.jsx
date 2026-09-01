@@ -50,7 +50,7 @@ export default function App() {
       <main className="workbench">
         <aside className="rail" aria-label="Diagram controls">
           <header className="brand">
-            <div className="brand-mark" aria-hidden="true"><i /><i /><i /></div>
+            <img className="brand-mark" src="/favicon.svg" alt="" aria-hidden="true" />
             <div>
               <p className="eyebrow">Local graph workbench</p>
               <h1>Mermaid Atlas</h1>

@@ -60,18 +60,9 @@ button { color: inherit; }
 .brand-mark {
   width: 40px;
   height: 40px;
-  position: relative;
-  border: 1px solid #9eacc0;
-  background: #fff;
+  flex: 0 0 auto;
+  display: block;
 }
-
-.brand-mark i { position: absolute; width: 8px; height: 8px; border: 2px solid var(--blue); background: #fff; }
-.brand-mark i:nth-child(1) { left: 7px; top: 7px; }
-.brand-mark i:nth-child(2) { right: 7px; top: 15px; border-color: var(--coral); }
-.brand-mark i:nth-child(3) { left: 12px; bottom: 6px; border-color: var(--mint); }
-.brand-mark::before, .brand-mark::after { content: ""; position: absolute; height: 1px; background: #76869d; transform-origin: left; }
-.brand-mark::before { width: 18px; left: 13px; top: 13px; transform: rotate(23deg); }
-.brand-mark::after { width: 14px; left: 15px; top: 27px; transform: rotate(-34deg); }
 
 .eyebrow { margin: 0 0 2px; color: var(--blue); font: 500 10px/1.2 "IBM Plex Mono", monospace; letter-spacing: .1em; text-transform: uppercase; }
 h1 { margin: 0; font: 700 20px/1.1 Manrope, sans-serif; letter-spacing: -.035em; }
@@ -310,10 +301,6 @@ kbd { border: 1px solid #d1d7df; border-radius: 2px; padding: 1px 5px; backgroun
 .app-root[data-theme="dark"] .workbench { background: #11161d; }
 .app-root[data-theme="dark"] .rail { border-color: #303947; scrollbar-color: #4a5668 transparent; }
 .app-root[data-theme="dark"] .brand { background: #202834; }
-.app-root[data-theme="dark"] .brand-mark { border-color: #56657a; background: #171e27; }
-.app-root[data-theme="dark"] .brand-mark i { background: #171e27; }
-.app-root[data-theme="dark"] .brand-mark::before,
-.app-root[data-theme="dark"] .brand-mark::after { background: #718096; }
 .app-root[data-theme="dark"] .panel-resizer { background: #171e27; border-color: #303947; }
 .app-root[data-theme="dark"] .panel-resizer span { border-color: #667387; }
 .app-root[data-theme="dark"] .panel-resizer:hover,

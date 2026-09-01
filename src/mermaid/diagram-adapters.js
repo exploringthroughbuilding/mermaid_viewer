@@ -178,6 +178,18 @@ function graphDeclarations(text) {
 
 function parseGraph(rows) {
   const result = collection();
+  const groupStack = [];
+  rows.forEach(({ text, line }) => {
+    const declaration = text.match(/^subgraph\s+([A-Za-z_][\w.-]*)(?:\s*\[([\s\S]+)\])?$/i);
+    if (declaration) {
+      const parent = groupStack.at(-1);
+      const label = String(declaration[2] || declaration[1]).replace(/^['"]|['"]$/g, "").trim();
+      result.addGroup(declaration[1], label, line, parent?.key);
+      groupStack.push({ key: declaration[1], label });
+    } else if (/^end$/i.test(text)) {
+      groupStack.pop();
+    }
+  });
   rows.forEach(({ text, line }) => {
     if (!text || text.startsWith("%%") || /^(flowchart|graph|block-beta|columns|direction)\b/i.test(text)) return;
     graphDeclarations(text).forEach(({ key, label }) => result.addItem(key, label, line));
@@ -641,6 +653,26 @@ export function analyzeDiagram(source) {
     relations: parsed.relations,
     groups: parsed.groups || [],
   };
+}
+
+export function findUntraversableGroupEdges(analysis, indexedEdges = []) {
+  const indexedEdgeKeys = new Set(indexedEdges.map(({ from, to }) => `${from}\u0000${to}`));
+  const groups = new Map((analysis?.groups || []).map(({ key, label, line }) => [key, { key, label, line }]));
+  return (analysis?.relations || [])
+    .filter(({ from, to }) => (
+      (groups.has(from) || groups.has(to))
+      && !indexedEdgeKeys.has(`${from}\u0000${to}`)
+    ))
+    .map(({ from, to, line }) => ({
+      from,
+      to,
+      sourceLine: line ?? null,
+      groupEndpoint: groups.has(from) ? groups.get(from) : groups.get(to),
+      reason: "A Mermaid subgraph is a visual container, not an indexable graph node.",
+      suggestedRewrite: groups.has(from)
+        ? `Replace ${from} with an explicit node inside that subgraph.`
+        : `Replace ${to} with an explicit node inside that subgraph.`,
+    }));
 }
 
 export function matchSemanticItem(analysis, key, label, usedKeys = new Set()) {

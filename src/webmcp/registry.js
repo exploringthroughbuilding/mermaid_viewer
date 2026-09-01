@@ -29,13 +29,14 @@ function instrument(tool) {
     title: tool.title,
     description: tool.description,
     inputSchema: tool.inputSchema,
+    outputSchema: tool.outputSchema,
     annotations: tool.annotations,
     async execute(input = {}) {
       const call = logToolCall(tool.name, input);
       try {
         const result = await tool.execute(input);
         const text = result?.content?.[0]?.text ?? "";
-        const failed = text.startsWith("ERROR:");
+        const failed = result?.isError === true || text.startsWith("ERROR:");
         const headline = text.split("\n")[0].slice(0, 120);
         if (failed) call.fail(headline);
         else call.succeed(headline);
@@ -43,7 +44,16 @@ function instrument(tool) {
       } catch (error) {
         const message = String(error?.message || error);
         call.fail(message.slice(0, 120));
-        return { content: [{ type: "text", text: `ERROR: ${tool.name} failed. ${message}` }] };
+        return {
+          content: [{ type: "text", text: `ERROR: ${tool.name} failed. ${message}` }],
+          structuredContent: {
+            ok: false,
+            summary: `${tool.name} failed.`,
+            data: {},
+            error: { message },
+          },
+          isError: true,
+        };
       }
     },
   };

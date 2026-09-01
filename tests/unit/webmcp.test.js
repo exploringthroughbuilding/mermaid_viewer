@@ -13,6 +13,7 @@ import {
   resolveNodeRef,
   searchNodes,
 } from "../../src/webmcp/graph-queries.js";
+import { analyzeDiagram, findUntraversableGroupEdges } from "../../src/mermaid/diagram-adapters.js";
 
 const fence = "```";
 
@@ -235,5 +236,25 @@ describe("bounded graph queries", () => {
     const deep = graphOf(Array.from({ length: 20000 }, (_, index) => [`n${index}`, `n${index + 1}`]));
     expect(() => findStructuralIssues(deep)).not.toThrow();
     expect(findStructuralIssues(deep).cycles).toHaveLength(0);
+  });
+});
+
+describe("graph source diagnostics", () => {
+  it("retains explicit subgraph ids so non-traversable container edges can be reported", () => {
+    const analysis = analyzeDiagram([
+      "flowchart LR",
+      "  subgraph Analysis[Analysis stage]",
+      "    A[Analyzer]",
+      "  end",
+      "  Analysis --> Approval[Approval gate]",
+    ].join("\n"));
+    expect(analysis.groups).toContainEqual(expect.objectContaining({ key: "Analysis", label: "Analysis stage", line: 1 }));
+    expect(analysis.relations).toContainEqual(expect.objectContaining({ from: "Analysis", to: "Approval", line: 4 }));
+    expect(findUntraversableGroupEdges(analysis, [])).toContainEqual(expect.objectContaining({
+      from: "Analysis",
+      to: "Approval",
+      sourceLine: 4,
+      suggestedRewrite: "Replace Analysis with an explicit node inside that subgraph.",
+    }));
   });
 });

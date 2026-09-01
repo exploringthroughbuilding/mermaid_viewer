@@ -184,6 +184,8 @@ artifact rather than a detached text answer.
 ### What is technically distinctive
 
 - Ten tools operate on the same active graph and canvas as the human, including an app-authored usage guide.
+- Every tool returns structured MCP data plus compatible text; explicit error results, rendered/editor state, and
+  narrow "use/don't use" descriptions help agents select and sequence tools reliably.
 - Stable source IDs and line mappings connect visual nodes, tool results, and precise edits.
 - Bounded search and traversal make large graphs model-friendly and explicitly report truncation.
 - Renderer-specific adapters preserve graph semantics across Mermaid SVG implementations.

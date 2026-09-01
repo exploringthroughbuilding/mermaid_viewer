@@ -6,7 +6,29 @@ import { importMarkdown, readLibrary, upsertDiagram, writeLibrary } from "./diag
 
 let library = [];
 let activeDiagramId = null;
+let renderedDiagramId = null;
 let libraryListeners = null;
+let disposeRenderListener = null;
+
+const toolOutputSchema = {
+  type: "object",
+  properties: {
+    ok: { type: "boolean", description: "Whether the tool completed successfully." },
+    summary: { type: "string", description: "Concise human-readable outcome." },
+    data: { type: "object", description: "Machine-readable result payload." },
+    error: {
+      type: "object",
+      properties: {
+        message: { type: "string" },
+        details: { type: "object" },
+      },
+      required: ["message"],
+      additionalProperties: false,
+    },
+  },
+  required: ["ok", "summary", "data"],
+  additionalProperties: false,
+};
 
 function persist() {
   writeLibrary(library);
@@ -14,6 +36,7 @@ function persist() {
 
 export function initialiseLibrary() {
   libraryListeners?.abort();
+  disposeRenderListener?.();
   libraryListeners = new AbortController();
 
   const stored = readLibrary();
@@ -22,7 +45,15 @@ export function initialiseLibrary() {
   const missingDemoEntries = demoEntries.filter(({ id }) => !storedIds.has(id));
   library = [...missingDemoEntries, ...stored];
   activeDiagramId = library.find(({ source }) => source === atlasApi.getSource())?.id || null;
+  renderedDiagramId = library.find(({ source }) => source === atlasApi.getRenderedSource())?.id || null;
   if (missingDemoEntries.length) persist();
+
+  disposeRenderListener = atlasApi.onRender(() => {
+    const source = atlasApi.getRenderedSource();
+    renderedDiagramId = library.find(({ id, source: candidate }) => id === activeDiagramId && candidate === source)?.id
+      || library.find((entry) => entry.source === source)?.id
+      || null;
+  });
 
   window.addEventListener("atlas-file-imported", (event) => {
     const { text, name } = event.detail || {};
@@ -48,19 +79,44 @@ export function initialiseLibrary() {
 export function disposeLibrary() {
   libraryListeners?.abort();
   libraryListeners = null;
+  disposeRenderListener?.();
+  disposeRenderListener = null;
 }
 
 function reply(summary, payload) {
   const text = payload === undefined ? summary : `${summary}\n\n${JSON.stringify(payload)}`;
-  return { content: [{ type: "text", text }] };
+  return {
+    content: [{ type: "text", text }],
+    structuredContent: { ok: true, summary, data: payload ?? {} },
+  };
 }
 
 function failure(summary, payload) {
-  return reply(`ERROR: ${summary}`, payload);
+  const text = payload === undefined ? `ERROR: ${summary}` : `ERROR: ${summary}\n\n${JSON.stringify(payload)}`;
+  return {
+    content: [{ type: "text", text }],
+    structuredContent: {
+      ok: false,
+      summary,
+      data: {},
+      error: { message: summary, ...(payload === undefined ? {} : { details: payload }) },
+    },
+    isError: true,
+  };
+}
+
+function requireRenderedCanvas() {
+  if (atlasApi.getSource() === atlasApi.getRenderedSource()) return null;
+  return failure(
+    "The editor contains source that has not finished rendering, so graph results may be stale.",
+    { suggestedAction: "Render the editor source, wait for the canvas to finish, then retry this tool." },
+  );
 }
 
 /** Turn an agent's node reference into an id, or an explanatory failure. */
 function requireNode(ref, field = "nodeId") {
+  const stale = requireRenderedCanvas();
+  if (stale) return { error: stale };
   const graph = atlasApi.getGraph();
   if (!graph.nodes.size) return { error: failure("No diagram is rendered yet. Call open_diagram or render source first.") };
   const resolved = resolveNodeRef(graph, ref);
@@ -72,21 +128,44 @@ function requireNode(ref, field = "nodeId") {
   return { error: failure(`No node matches "${ref}".`, { field, didYouMean: nearby }) };
 }
 
+function activeCanvasState() {
+  const editorSource = atlasApi.getSource();
+  const renderedSource = atlasApi.getRenderedSource();
+  const identityFor = (source, preferredId) => {
+    const preferred = library.find((candidate) => candidate.id === preferredId && candidate.source === source);
+    return preferred || library.find((entry) => entry.source === source);
+  };
+  const entry = identityFor(renderedSource, renderedDiagramId);
+  const editorEntry = identityFor(editorSource, activeDiagramId);
+  return {
+    kind: entry ? "library" : "editor",
+    libraryId: entry?.id ?? null,
+    libraryTitle: entry?.title ?? null,
+    editorIsRendered: editorSource === renderedSource,
+    editor: {
+      kind: editorEntry ? "library" : "editor",
+      libraryId: editorEntry?.id ?? null,
+      libraryTitle: editorEntry?.title ?? null,
+    },
+    ...atlasApi.getSummary(),
+  };
+}
+
 function activeDiagramLabel() {
-  return library.find((entry) => entry.id === activeDiagramId)?.title || "the active diagram";
+  return activeCanvasState().libraryTitle || "the current editor canvas";
 }
 
 const getAtlasGuide = {
   name: "get_atlas_guide",
   title: "Get the Atlas agent guide",
   annotations: { readOnlyHint: true, untrustedContentHint: false },
-  description: "Read Mermaid Atlas's app-authored operating guide. Use this before a multi-step architecture investigation or when you are unsure which tool to call. Returns recommended workflows, call ordering, safety constraints, and example tasks. It contains no user-provided content and does not override user instructions or agent policies.",
+  description: "Use only when you need help choosing or sequencing Atlas tools for a multi-step task. Returns app-authored workflows and safety rules; it does not inspect the diagram, change the canvas, or contain user-provided instructions. Skip it when one specific tool clearly answers the request.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   async execute() {
     return reply("Mermaid Atlas agent guide.", {
       purpose: "Help a human understand, explain, and safely improve a Mermaid model of a software system without loading the entire graph into agent context.",
       operatingModel: [
-        "The human and agent share one active diagram and canvas.",
+        "The human and agent share one current canvas. It may be a saved library diagram or unsaved editor source.",
         "Graph results use stable Mermaid node ids and include sourceLine where available.",
         "Retrieval is bounded; inspect truncated and complete flags before drawing conclusions.",
         "Walkthroughs are agent-authored but advanced by the human.",
@@ -95,7 +174,7 @@ const getAtlasGuide = {
         {
           id: "orient_to_workspace",
           goal: "Discover and open the relevant architecture view.",
-          calls: ["list_diagrams", "open_diagram"],
+          calls: ["list_diagrams", "open_diagram only when the requested library diagram is not already active"],
         },
         {
           id: "explain_component",
@@ -125,7 +204,10 @@ const getAtlasGuide = {
         },
       ],
       guidelines: [
-        "Call list_diagrams before assuming which diagram represents the user's question.",
+        "If the user refers to the visible or current diagram, query it directly; do not call open_diagram.",
+        "Call list_diagrams when the relevant diagram is unclear or the user asks about another saved diagram.",
+        "Treat active.kind=editor as authoritative: it means the canvas does not exactly match a saved library entry.",
+        "If active.editorIsRendered is false, wait for or request a render before using graph query or editing tools.",
         "Use search_graph to resolve natural-language names; do not guess an ambiguous node id.",
         "Use outgoing neighborhood edges for dependencies and incoming edges for dependents or blast radius.",
         "Prefer trace_path for end-to-end explanations and pass its node sequence to create_walkthrough.",
@@ -146,9 +228,9 @@ const getAtlasGuide = {
 
 const listDiagrams = {
   name: "list_diagrams",
-  title: "List diagrams",
+  title: "List saved diagrams and canvas state",
   annotations: { readOnlyHint: true, untrustedContentHint: true },
-  description: "List a bounded page of Mermaid diagrams in this Atlas workspace, including the built-in challenge demo and diagrams imported from Markdown. Returns ids, titles, headings, size, and a cursor for the next page.",
+  description: "Use to discover saved diagrams or check current state. This does not change anything. active describes the rendered canvas; active.editor describes the editor source; active.editorIsRendered says whether graph queries reflect that source. kind='library' includes an exact saved id, while kind='editor' means custom/modified source. Do not call open_diagram merely to inspect the current canvas.",
   inputSchema: {
     type: "object",
     properties: {
@@ -158,7 +240,7 @@ const listDiagrams = {
     additionalProperties: false,
   },
   async execute({ limit = 8, cursor = 0 } = {}) {
-    const summary = atlasApi.getSummary();
+    const active = activeCanvasState();
     const boundedLimit = Math.max(1, Math.min(Number(limit) || 8, 20));
     const start = Math.max(0, Math.min(Number(cursor) || 0, library.length));
     const page = library.slice(start, start + boundedLimit);
@@ -166,13 +248,14 @@ const listDiagrams = {
     return reply(
       library.length ? `${library.length} diagram(s) in the workspace.` : "The workspace library is empty; the editor still holds the active source.",
       {
-        active: { libraryId: activeDiagramId, ...summary },
+        active,
         total: library.length,
         cursor: start,
         nextCursor,
         truncated: nextCursor !== null,
         diagrams: page.map(({ id, title, headingPath, source, origin }) => ({
           id,
+          isActive: id === active.libraryId,
           title: title.slice(0, 120),
           headingPath: headingPath.slice(-6).map((heading) => String(heading).slice(0, 80)),
           origin: String(origin).slice(0, 80),
@@ -186,28 +269,59 @@ const listDiagrams = {
 
 const openDiagram = {
   name: "open_diagram",
-  title: "Open diagram",
-  annotations: { readOnlyHint: false, untrustedContentHint: true },
-  description: "Render one diagram from the workspace onto the canvas and make it the active graph. All graph queries (search_graph, get_neighborhood, trace_path) operate on the active diagram, so open a diagram before querying it. Returns the resulting node and edge counts.",
+  title: "Switch to a saved diagram",
+  annotations: {
+    readOnlyHint: false, destructiveHint: true, idempotentHint: true, untrustedContentHint: true,
+  },
+  description: "Use only to replace the current canvas with a different saved diagram chosen from list_diagrams. This changes editor/canvas state and closes any walkthrough. It refuses to overwrite unrendered editor changes unless explicitly authorized. Do not call when the user means the current canvas; graph query tools already operate on it. Returns both previous and new identities.",
   inputSchema: {
     type: "object",
-    properties: { diagramId: { type: "string", description: "Diagram id from list_diagrams." } },
+    properties: {
+      diagramId: { type: "string", description: "Diagram id from list_diagrams." },
+      discardUnrenderedEditorChanges: {
+        type: "boolean",
+        description: "Set true only with user authorization to replace editor source that has not been rendered (default false).",
+      },
+    },
     required: ["diagramId"],
     additionalProperties: false,
   },
-  async execute({ diagramId }) {
+  async execute({ diagramId, discardUnrenderedEditorChanges = false }) {
+    const previous = activeCanvasState();
     const entry = library.find((item) => item.id === diagramId)
       || library.find((item) => item.title.toLowerCase() === String(diagramId).toLowerCase());
     if (!entry) {
       return failure(`No diagram with id "${diagramId}".`, { available: library.map(({ id, title }) => ({ id, title })) });
     }
+    if (!previous.editorIsRendered && previous.editor.kind === "editor" && !discardUnrenderedEditorChanges) {
+      return failure("The editor has unrendered changes, so switching diagrams was stopped to avoid overwriting them.", {
+        active: previous,
+        suggestedAction: "Render or preserve the editor changes first. Retry with discardUnrenderedEditorChanges=true only if the user wants to discard them.",
+      });
+    }
+    if (previous.libraryId === entry.id && previous.editorIsRendered) {
+      return reply(`"${entry.title}" is already the current canvas; nothing changed.`, {
+        changed: false,
+        previous,
+        active: previous,
+        libraryId: entry.id,
+        ...atlasApi.getSummary(),
+      });
+    }
     endWalkthrough();
     const summary = await atlasApi.setSourceAndRender(entry.source, { label: `open ${entry.title}`, snapshot: false });
     activeDiagramId = entry.id;
+    renderedDiagramId = entry.id;
     if (!summary.nodeCount && summary.mode !== "canvas") {
       return failure(`"${entry.title}" rendered but produced no indexable nodes.`, summary);
     }
-    return reply(`Opened "${entry.title}" — ${summary.nodeCount} nodes, ${summary.edgeCount} edges.`, { libraryId: entry.id, ...summary });
+    return reply(`Switched the canvas to "${entry.title}" — ${summary.nodeCount} nodes, ${summary.edgeCount} edges.`, {
+      changed: true,
+      previous,
+      active: activeCanvasState(),
+      libraryId: entry.id,
+      ...summary,
+    });
   },
 };
 
@@ -215,7 +329,7 @@ const searchGraph = {
   name: "search_graph",
   title: "Search graph",
   annotations: { readOnlyHint: true, untrustedContentHint: true },
-  description: "Find nodes in the active diagram by name, id, or subgraph. Returns a bounded, ranked list with stable node ids, connection counts, and the source line each node is declared on. Use this to turn a human description like 'the payment service' into an exact node id before calling other tools.",
+  description: "Use first when a node id is unknown or a human names a component naturally. Searches only the current visible canvas and does not change it. Returns ranked exact node ids and source lines for get_neighborhood, trace_path, create_walkthrough, or apply_patch. Do not use to search saved diagram titles; use list_diagrams for that.",
   inputSchema: {
     type: "object",
     properties: {
@@ -226,6 +340,8 @@ const searchGraph = {
     additionalProperties: false,
   },
   async execute({ query, limit }) {
+    const stale = requireRenderedCanvas();
+    if (stale) return stale;
     const graph = atlasApi.getGraph();
     if (!graph.nodes.size) return failure("No diagram is rendered yet.");
     const result = searchNodes(graph, query, limit);
@@ -240,8 +356,10 @@ const searchGraph = {
 const getNeighborhood = {
   name: "get_neighborhood",
   title: "Inspect neighborhood",
-  annotations: { readOnlyHint: false, untrustedContentHint: true },
-  description: "Inspect what connects to one node without loading the whole graph. Walks outgoing edges (what it depends on), incoming edges (what depends on it, i.e. blast radius), or both, up to a bounded depth. This is the safe way to explore a very large diagram: results are capped and report whether they were truncated.",
+  annotations: {
+    readOnlyHint: false, destructiveHint: false, idempotentHint: true, untrustedContentHint: true,
+  },
+  description: "Use for local dependencies, dependents, or blast radius around one node on the current canvas. outgoing means dependencies; incoming means dependents/blast radius. It selects the root node visually but never edits Mermaid source. For a route between two known endpoints use trace_path instead.",
   inputSchema: {
     type: "object",
     properties: {
@@ -270,7 +388,7 @@ const tracePath = {
   name: "trace_path",
   title: "Trace path",
   annotations: { readOnlyHint: true, untrustedContentHint: true },
-  description: "Find how one node reaches another through the graph, returning up to a few shortest routes with every intermediate hop. Use this to answer questions like 'how does a checkout request reach the payment database'. The returned node id sequence can be passed straight to create_walkthrough.",
+  description: "Use only for an end-to-end route between two nodes on the current canvas. Returns shortest routes and every intermediate hop without changing source or selection. Resolve uncertain endpoints with search_graph first. Pass one returned nodes sequence to create_walkthrough; use get_neighborhood instead for one-node impact analysis.",
   inputSchema: {
     type: "object",
     properties: {
@@ -289,16 +407,30 @@ const tracePath = {
     if (target.error) return target.error;
     if (source.id === target.id) return failure("`from` and `to` resolve to the same node.");
 
-    const result = findPaths(atlasApi.getGraph(), source.id, target.id, { maxPaths, direction });
+    const graph = atlasApi.getGraph();
+    const result = findPaths(graph, source.id, target.id, { maxPaths, direction });
+    const untraversableEdges = graph.untraversableEdges || [];
     if (!result.paths.length) {
       return reply(
         `No ${direction === "outgoing" ? "directed " : ""}route from ${result.from.label} to ${result.to.label}.`,
-        { ...result, hint: direction === "outgoing" ? "Retry with direction 'both' to ignore edge direction." : undefined },
+        {
+          ...result,
+          untraversableEdges,
+          ...(untraversableEdges.length
+            ? { hint: "One or more Mermaid edges target a subgraph container and cannot be traversed. Rewrite each reported endpoint to an explicit node, then retry." }
+            : direction === "outgoing" ? { hint: "Retry with direction 'both' to ignore edge direction." } : {}),
+        },
       );
     }
     return reply(
       `${result.paths.length} route(s) from ${result.from.label} to ${result.to.label}; shortest has ${result.paths[0].length} nodes.`,
-      result,
+      {
+        ...result,
+        ...(untraversableEdges.length ? {
+          untraversableEdges,
+          warning: "Some source edges target subgraph containers and were excluded from traversal.",
+        } : {}),
+      },
     );
   },
 };
@@ -306,8 +438,10 @@ const tracePath = {
 const createWalkthrough = {
   name: "create_walkthrough",
   title: "Create walkthrough",
-  annotations: { readOnlyHint: false, untrustedContentHint: true },
-  description: "Build a narrated, step-by-step tour of a path through the diagram and show it in a floating control bar the human drives with Back/Next. Each step centres and highlights one node with your caption explaining it. The person stays in control of pacing — you author the route and the narration, they step through it. Use node id sequences from trace_path or get_neighborhood.",
+  annotations: {
+    readOnlyHint: false, destructiveHint: false, idempotentHint: false, untrustedContentHint: true,
+  },
+  description: "Use after finding an ordered route to show a human-driven Back/Next tour on the current canvas. This changes only walkthrough UI, never Mermaid source. Prefer a node sequence returned by trace_path. Connected steps are required by default; set requireConnected=false only for an intentional conceptual tour with jumps.",
   inputSchema: {
     type: "object",
     properties: {
@@ -327,11 +461,17 @@ const createWalkthrough = {
           additionalProperties: false,
         },
       },
+      requireConnected: {
+        type: "boolean",
+        description: "Reject the tour if any consecutive nodes lack a graph edge (default true). Set false only for intentional jumps.",
+      },
     },
     required: ["title", "steps"],
     additionalProperties: false,
   },
-  async execute({ title, steps }) {
+  async execute({ title, steps, requireConnected = true }) {
+    const stale = requireRenderedCanvas();
+    if (stale) return stale;
     const graph = atlasApi.getGraph();
     if (!graph.nodes.size) return failure("No diagram is rendered yet.");
 
@@ -342,7 +482,7 @@ const createWalkthrough = {
       resolvedSteps.push({ nodeId: resolved.id, caption: entry.caption });
     }
 
-    const result = await startWalkthrough({ title, steps: resolvedSteps });
+    const result = await startWalkthrough({ title, steps: resolvedSteps, requireConnected });
     if (!result.ok) return failure(`Could not start the walkthrough (${result.reason}).`, result);
     return reply(
       `Walkthrough "${title}" is live with ${result.total} steps. The human can step through it with the bar at the bottom of the canvas.`,
@@ -360,8 +500,10 @@ const createWalkthrough = {
 const applyPatch = {
   name: "apply_patch",
   title: "Apply diagram patch",
-  annotations: { readOnlyHint: false, untrustedContentHint: false },
-  description: "Edit the active diagram's Mermaid source with line-targeted operations, then re-render. Node results from search_graph and get_neighborhood include the exact sourceLine to target. The patch is validated by the Mermaid parser before it is committed: if it would not parse, nothing changes and the parser error is returned. Every successful patch is snapshotted with its diagram and revision context, so undo_last_change can safely revert it.",
+  annotations: {
+    readOnlyHint: false, destructiveHint: true, idempotentHint: false, untrustedContentHint: true,
+  },
+  description: "Use only when the user asks to modify Mermaid source on the current canvas. Applies exact line/text operations, validates before commit, and re-renders; invalid patches change nothing. This is not needed for explanations, reviews, selection, or walkthroughs. Use sourceLine from graph results and keep patches small. A successful patch can be reverted with undo_last_change.",
   inputSchema: {
     type: "object",
     properties: {
@@ -387,6 +529,8 @@ const applyPatch = {
     additionalProperties: false,
   },
   async execute({ operations, description = "agent patch" }) {
+    const stale = requireRenderedCanvas();
+    if (stale) return stale;
     const original = atlasApi.getSource();
     const historyContext = activeDiagramId || "editor";
     let lines = original.split("\n");
@@ -432,8 +576,21 @@ const applyPatch = {
     try {
       await atlasApi.validateSource(next);
     } catch (error) {
+      const parserError = String(error?.message || error);
+      const oneBasedLine = Number(parserError.match(/line\s+(\d+)/i)?.[1]);
+      const sourceLines = next.split("\n");
+      const sourceLine = Number.isInteger(oneBasedLine) && oneBasedLine > 0 ? oneBasedLine - 1 : null;
+      const excerptStart = sourceLine == null ? 0 : Math.max(0, sourceLine - 1);
       return failure("The patched source is not valid Mermaid, so nothing was changed.", {
-        parserError: String(error?.message || error).split("\n").slice(0, 4).join(" "),
+        parserError: parserError.split("\n").slice(0, 4).join(" "),
+        sourceLine,
+        sourceExcerpt: sourceLines.slice(excerptStart, excerptStart + 3).map((text, index) => ({
+          line: excerptStart + index,
+          text,
+        })),
+        suggestedAction: sourceLine == null
+          ? "Retry with a smaller operation and preserve the diagram declaration on the first non-comment line."
+          : `Inspect zero-based line ${sourceLine}; retry with a smaller replace_line or replace_text operation around that line.`,
       });
     }
 
@@ -445,6 +602,7 @@ const applyPatch = {
     if (activeDiagramId) {
       const result = upsertDiagram(library, { id: activeDiagramId, source: next, origin: "agent" });
       library = result.entries;
+      renderedDiagramId = activeDiagramId;
       persist();
     }
     return reply(
@@ -457,8 +615,10 @@ const applyPatch = {
 const undoLastChange = {
   name: "undo_last_change",
   title: "Undo last agent change",
-  annotations: { readOnlyHint: false, untrustedContentHint: false },
-  description: "Revert the most recent source change made by apply_patch, restoring and re-rendering the previous version. Use this when a patch turned out to be wrong or the human asks to undo it.",
+  annotations: {
+    readOnlyHint: false, destructiveHint: true, idempotentHint: false, untrustedContentHint: true,
+  },
+  description: "Use only to revert the latest successful apply_patch on the current diagram, typically when the user rejects it or asks to undo it. It never undoes human edits or open_diagram switches, and refuses if the source changed after the patch.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   async execute() {
     const historyContext = activeDiagramId || "editor";
@@ -469,6 +629,7 @@ const undoLastChange = {
     if (activeDiagramId) {
       const result = upsertDiagram(library, { id: activeDiagramId, source: atlasApi.getSource(), origin: "agent" });
       library = result.entries;
+      renderedDiagramId = activeDiagramId;
       persist();
     }
     return reply(`Reverted "${restored.label}". Now ${restored.nodeCount} nodes, ${restored.edgeCount} edges.`, restored);
@@ -479,13 +640,15 @@ const analyzeStructure = {
   name: "analyze_structure",
   title: "Analyze structure",
   annotations: { readOnlyHint: true, untrustedContentHint: true },
-  description: "Report structural problems in the active diagram: dependency cycles, orphaned nodes with no connections at all, entry points with no inbound edges, and dead ends with no outbound edges. Use this for architecture review questions like 'find cycles, dead ends and orphaned services'.",
+  description: "Use for a whole-current-canvas structural audit: cycles, orphans, entry points, and dead ends. It does not change canvas or source. Do not use for a named component's local dependencies (get_neighborhood) or a route between endpoints (trace_path).",
   inputSchema: {
     type: "object",
     properties: { limit: { type: "integer", minimum: 1, maximum: 50, description: "Maximum items per category (default 20)." } },
     additionalProperties: false,
   },
   async execute({ limit = 20 }) {
+    const stale = requireRenderedCanvas();
+    if (stale) return stale;
     const graph = atlasApi.getGraph();
     if (!graph.nodes.size) return failure("No diagram is rendered yet.");
     const issues = findStructuralIssues(graph, limit);
@@ -507,7 +670,11 @@ export const tools = [
   applyPatch,
   undoLastChange,
   analyzeStructure,
-];
+].map((tool) => ({
+  ...tool,
+  outputSchema: toolOutputSchema,
+  annotations: { openWorldHint: false, ...tool.annotations },
+}));
 
 export function currentWalkthrough() {
   return activeWalkthrough();

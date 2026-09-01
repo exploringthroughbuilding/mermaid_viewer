@@ -22,6 +22,12 @@ const examples = {
   ...Object.fromEntries(viewerFixtures.map((entry) => [entry.id, { label: `${entry.family} · ${entry.title}`, source: entry.source }])),
 };
 
+let atlasApi;
+export { atlasApi };
+
+export function initializeController() {
+if (atlasApi) return atlasApi;
+
 const elements = {
   rail: document.querySelector(".rail"),
   workbench: document.querySelector(".workbench"),
@@ -76,6 +82,8 @@ const collapsedGroupKeys = new Set();
 let markdownBlocks = [];
 let markdownLibraryIds = [];
 let renderSequence = 0;
+let inFlightRender = null;
+let agentToolsReady = false;
 const sensitivityStorageKey = "mermaid-atlas-interaction-settings";
 const defaultSensitivity = { zoom: 1, pan: 1, device: "trackpad" };
 let sensitivity = loadSensitivity();
@@ -293,10 +301,6 @@ function setStatus(message, state = "idle") {
 
 function extractMermaidBlocks(value) {
   return [...value.matchAll(/```mermaid\s*\n([\s\S]*?)```/gi)].map((match) => match[1].trim());
-}
-
-function activeSource() {
-  return elements.source.value.trim();
 }
 
 function relationshipVocabulary() {
@@ -993,14 +997,23 @@ function zoomSelectedNode() {
   return true;
 }
 
-async function renderDiagram(preserveView = false) {
-  const shouldPreserveView = preserveView === true;
+function showRenderStatus(editorSource) {
+  if (elements.source.value !== editorSource) {
+    setStatus("Editor changes not rendered", "idle");
+  } else if (agentToolsReady) {
+    setStatus("Diagram ready", "ready");
+  } else {
+    setStatus("Preparing agent tools…", "working");
+  }
+}
+
+async function performRender(editorSource, shouldPreserveView) {
   const selectionToRestore = shouldPreserveView ? selectedKey : null;
-  const source = activeSource();
+  const source = editorSource.trim();
   if (!source) {
     setStatus("Add Mermaid source first", "error");
     elements.source.focus();
-    return;
+    return { ok: false, reason: "empty_source" };
   }
 
   const sequence = ++renderSequence;
@@ -1014,7 +1027,7 @@ async function renderDiagram(preserveView = false) {
   try {
     await parseMermaid(source);
     const { svg, bindFunctions } = await renderMermaid(`atlas-${sequence}`, source);
-    if (sequence !== renderSequence) return;
+    if (sequence !== renderSequence) return { ok: false, reason: "superseded" };
     elements.stage.innerHTML = svg;
     bindFunctions?.(elements.stage);
     const renderedSVG = elements.stage.querySelector("svg");
@@ -1034,10 +1047,12 @@ async function renderDiagram(preserveView = false) {
         if (sequence === renderSequence && selectedKey === null && transformRevision === revisionBeforeFit) fitGraph();
       });
     }
-    setStatus("Diagram ready", "ready");
-    renderedSource = source;
+    renderedSource = editorSource;
+    showRenderStatus(editorSource);
     notifyRendered();
+    return { ok: true, ...diagramSummary() };
   } catch (error) {
+    if (sequence !== renderSequence) return { ok: false, reason: "superseded" };
     elements.stage.innerHTML = "";
     elements.canvasEmpty.hidden = false;
     elements.canvasEmpty.querySelector("p").textContent = "Mermaid could not render this source.";
@@ -1049,10 +1064,32 @@ async function renderDiagram(preserveView = false) {
     };
     renderedSource = "";
     renderNodeList();
+    return { ok: false, reason: "render_failed", message: String(error?.message || error) };
   } finally {
-    elements.render.disabled = false;
-    elements.render.textContent = "Render diagram";
+    if (sequence === renderSequence) {
+      elements.render.disabled = false;
+      elements.render.textContent = "Render diagram";
+    }
   }
+}
+
+function renderDiagram(preserveView = false) {
+  const editorSource = elements.source.value;
+  const shouldPreserveView = preserveView === true;
+  if (inFlightRender?.editorSource === editorSource && !shouldPreserveView) return inFlightRender.promise;
+  if (inFlightRender?.editorSource === editorSource && shouldPreserveView) {
+    return inFlightRender.promise.then((result) => (
+      result.ok && elements.source.value === editorSource ? renderDiagram(true) : result
+    ));
+  }
+
+  const promise = performRender(editorSource, shouldPreserveView);
+  inFlightRender = { editorSource, promise };
+  const clear = () => {
+    if (inFlightRender?.promise === promise) inFlightRender = null;
+  };
+  promise.then(clear, clear);
+  return promise;
 }
 
 let drag = null;
@@ -1140,6 +1177,7 @@ elements.source.addEventListener("input", () => {
   // Record the editor identity immediately. WebMCP separately reports whether
   // this source has reached the rendered canvas yet.
   announceActiveSource("editor");
+  if (elements.stage.querySelector("svg")) setStatus("Editor changes not rendered", "idle");
   elements.examplePicker.value = "";
 });
 elements.source.addEventListener("scroll", () => updateSourceLineHighlight());
@@ -1376,8 +1414,8 @@ async function setSourceAndRender(source, { label = "edit", snapshot = true, his
   if (snapshot) pushSourceSnapshot(label, source, historyContext);
   elements.source.value = source;
   updateSourceFromEditor();
-  await renderDiagram();
-  return diagramSummary();
+  const render = await renderDiagram();
+  return { ...diagramSummary(), renderOk: render.ok, renderReason: render.reason ?? null };
 }
 
 async function undoSourceChange({ historyContext = null } = {}) {
@@ -1403,11 +1441,19 @@ async function undoSourceChange({ historyContext = null } = {}) {
   if (!previous) return null;
   elements.source.value = previous.source;
   updateSourceFromEditor();
-  await renderDiagram();
+  const render = await renderDiagram();
+  if (!render.ok || elements.source.value !== renderedSource) {
+    return {
+      ok: false,
+      reason: render.reason || "render_state_mismatch",
+      label: previous.label,
+      message: "The source was restored, but the restored diagram did not finish rendering.",
+    };
+  }
   return { ok: true, label: previous.label, restoredAt: previous.at, ...diagramSummary() };
 }
 
-export const atlasApi = {
+atlasApi = {
   getGraph: () => graph,
   getSummary: diagramSummary,
   getSource: () => elements.source.value,
@@ -1429,6 +1475,10 @@ export const atlasApi = {
   animateCameraTo,
   cancelCameraAnimation,
   setStatus,
+  markAgentToolsReady() {
+    agentToolsReady = true;
+    if (renderedSource && !inFlightRender) showRenderStatus(renderedSource);
+  },
   setEdgeOverlay,
   onRender(subscriber) {
     renderSubscribers.add(subscriber);
@@ -1447,3 +1497,5 @@ updateSensitivityControls();
 updateIndexControls();
 applyPanelSizes();
 renderDiagram();
+return atlasApi;
+}

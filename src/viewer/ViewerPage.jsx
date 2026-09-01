@@ -15,26 +15,6 @@ export default function App() {
   const [theme, setTheme] = useState(loadTheme);
 
   useEffect(() => {
-    let unregister;
-    let cancelled = false;
-    // The controller is imported for its side effects first; the WebMCP layer
-    // depends on the workbench already owning the DOM.
-    void import("./controller.js")
-      .then(() => import("../webmcp/registry.js"))
-      .then(async ({ registerAtlasTools, unregisterAtlasTools }) => {
-        if (cancelled) return;
-        unregister = unregisterAtlasTools;
-        const { mode, registered } = await registerAtlasTools();
-        console.info(`[atlas] WebMCP ${mode}: ${registered.length} tools`);
-      })
-      .catch((error) => console.error("[atlas] WebMCP setup failed", error));
-    return () => {
-      cancelled = true;
-      unregister?.();
-    };
-  }, []);
-
-  useEffect(() => {
     try {
       localStorage.setItem(themeStorageKey, theme);
     } catch {

@@ -1,5 +1,6 @@
 import { disposeLibrary, initialiseLibrary, tools } from "./tools.js";
 import { announceReady, logToolCall } from "./activity-log.js";
+import { atlasApi } from "../viewer/controller.js";
 
 let registration = null;
 let mode = "unavailable";
@@ -10,7 +11,6 @@ let mode = "unavailable";
  * native build never download it.
  */
 async function ensureModelContext() {
-  if (document.modelContext) return "native";
   try {
     await import("@mcp-b/global");
   } catch {
@@ -60,9 +60,12 @@ function instrument(tool) {
 }
 
 export async function registerAtlasTools() {
-  mode = await ensureModelContext();
+  // Avoid yielding during native startup: issue every registration before the
+  // document-ready task can let a client take its first tool snapshot.
+  mode = document.modelContext ? "native" : await ensureModelContext();
   initialiseLibrary();
   if (mode === "unavailable") {
+    atlasApi.markAgentToolsReady();
     console.info("[atlas] WebMCP unavailable. Enable chrome://flags/#enable-webmcp-testing or open in a WebMCP-capable browser.");
     return { mode, registered: [] };
   }
@@ -72,17 +75,19 @@ export async function registerAtlasTools() {
   registration?.abort();
   registration = new AbortController();
 
-  const registered = [];
-  for (const tool of tools) {
+  const registrations = tools.map(async (tool) => {
     try {
       await document.modelContext.registerTool(instrument(tool), { signal: registration.signal });
-      registered.push(tool.name);
+      return tool.name;
     } catch (error) {
       console.warn(`[atlas] could not register ${tool.name}`, error);
+      return null;
     }
-  }
+  });
+  const registered = (await Promise.all(registrations)).filter(Boolean);
 
   announceReady(registered, mode);
+  atlasApi.markAgentToolsReady();
   return { mode, registered };
 }
 

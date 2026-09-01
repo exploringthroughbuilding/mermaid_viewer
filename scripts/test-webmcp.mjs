@@ -49,29 +49,36 @@ try {
         return await mc.listTools();
       }
     };
+    window.firstReadyToolSnapshot = new Promise((resolve) => {
+      document.addEventListener("DOMContentLoaded", async () => {
+        try {
+          const tools = await window.listRegisteredTools();
+          resolve(tools.map((tool) => ({
+            name: tool.name,
+            title: tool.title,
+            annotations: tool.annotations,
+            outputSchema: tool.outputSchema,
+          })));
+        } catch {
+          resolve([]);
+        }
+      }, { once: true });
+    });
   });
 
   await page.goto("http://127.0.0.1:4175/", { waitUntil: "networkidle0" });
-  await page.waitForFunction(() => document.querySelector("#stage svg"), { timeout: 30000 });
 
   // --- registration -------------------------------------------------------
-  await page.waitForFunction(() => Boolean(document.modelContext), { timeout: 20000 });
-  const registered = await page.evaluate(async () => {
-    const tools = await listRegisteredTools();
-    return tools.map((tool) => ({
-      name: tool.name,
-      title: tool.title,
-      annotations: tool.annotations,
-      outputSchema: tool.outputSchema,
-    }));
-  });
+  // The first fetch happens immediately after page readiness: no retry and no
+  // app-specific readiness wait may hide a registration race.
+  const registered = await page.evaluate(async () => window.firstReadyToolSnapshot);
   const expected = [
     "get_atlas_guide", "list_diagrams", "open_diagram", "search_graph", "get_neighborhood",
     "trace_path", "create_walkthrough", "apply_patch", "undo_last_change", "analyze_structure",
   ];
   const registeredNames = registered.map(({ name }) => name);
   const missing = expected.filter((name) => !registeredNames.includes(name));
-  check("all tools registered via document.modelContext", missing.length === 0, missing.length ? `missing ${missing}` : `${registered.length} tools`);
+  check("the first tool snapshot after page readiness is complete", missing.length === 0, missing.length ? `missing ${missing}` : `${registered.length} tools`);
   const listMetadata = registered.find(({ name }) => name === "list_diagrams");
   const guideMetadata = registered.find(({ name }) => name === "get_atlas_guide");
   const patchMetadata = registered.find(({ name }) => name === "apply_patch");
@@ -143,6 +150,50 @@ try {
   check("list_diagrams paginates and reports truncation",
     firstPage?.diagrams?.length === 2 && firstPage?.truncated === true && secondPage?.diagrams?.length === 2,
     `next cursor ${firstPage?.nextCursor}`);
+
+  // Persisted sources can retain insignificant trailing whitespace. Opening
+  // them must track the exact editor snapshot even though Mermaid parses a
+  // trimmed copy, otherwise every graph tool sees a permanently stale canvas.
+  const deploymentId = coldStart?.diagrams?.find(({ title }) => title === "Deployment Environments")?.id;
+  const topologyIdCold = coldStart?.diagrams?.find(({ title }) => title === "Service Topology")?.id;
+  await page.evaluate((diagramId) => {
+    const storageKey = "mermaid-atlas-library:v1";
+    const entries = JSON.parse(localStorage.getItem(storageKey) || "[]");
+    const deployment = entries.find(({ id }) => id === diagramId);
+    if (deployment) deployment.source = `${deployment.source}\n\n`;
+    localStorage.setItem(storageKey, JSON.stringify(entries));
+  }, deploymentId);
+
+  await page.reload({ waitUntil: "networkidle0" });
+  const refreshedNames = await page.evaluate(async () => (await window.firstReadyToolSnapshot).map(({ name }) => name));
+  const refreshMissing = expected.filter((name) => !refreshedNames.includes(name));
+  check("the first tool snapshot after refresh is complete",
+    refreshMissing.length === 0,
+    refreshMissing.length ? `missing ${refreshMissing}` : `${refreshedNames.length} tools`);
+
+  const openedDeployment = await call("open_diagram", { diagramId: deploymentId });
+  const deployment = payloadOf(openedDeployment.text);
+  const deploymentState = payloadOf((await call("list_diagrams", { limit: 8 })).text)?.active;
+  const productionSearch = payloadOf((await call("search_graph", { query: "Production", limit: 5 })).text);
+  check("open_diagram finishes rendering an exact saved source before succeeding",
+    openedDeployment.isError !== true
+      && deployment?.active?.editorIsRendered === true
+      && deploymentState?.editorIsRendered === true
+      && deploymentState?.libraryId === deploymentId
+      && productionSearch?.results?.some(({ id }) => id === "Production"),
+    JSON.stringify({ open: deployment?.active, listed: deploymentState, results: productionSearch?.results?.map(({ id }) => id) }));
+
+  await page.click("#render");
+  await page.waitForFunction(() => document.querySelector("#status")?.textContent === "Diagram ready", { timeout: 30000 });
+  const deploymentAfterHumanRender = payloadOf((await call("list_diagrams", { limit: 8 })).text)?.active;
+  check("the UI Render action preserves rendered identity for saved source",
+    deploymentAfterHumanRender?.editorIsRendered === true && deploymentAfterHumanRender?.libraryId === deploymentId,
+    JSON.stringify(deploymentAfterHumanRender));
+
+  const reopenedTopology = await call("open_diagram", { diagramId: topologyIdCold });
+  check("saved topology can be restored after the render-state regression",
+    reopenedTopology.isError !== true && reopenedTopology.structuredContent?.data?.active?.editorIsRendered === true,
+    reopenedTopology.text.split("\n")[0]);
 
   // --- markdown import ----------------------------------------------------
   const fileInput = await page.$("#file-input");

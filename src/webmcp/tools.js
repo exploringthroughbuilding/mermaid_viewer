@@ -206,6 +206,7 @@ const getAtlasGuide = {
       guidelines: [
         "If the user refers to the visible or current diagram, query it directly; do not call open_diagram.",
         "Call list_diagrams when the relevant diagram is unclear or the user asks about another saved diagram.",
+        "A successful open_diagram call guarantees active.editorIsRendered=true; if rendering is interrupted or fails, it returns an error instead.",
         "Treat active.kind=editor as authoritative: it means the canvas does not exactly match a saved library entry.",
         "If active.editorIsRendered is false, wait for or request a render before using graph query or editing tools.",
         "Use search_graph to resolve natural-language names; do not guess an ambiguous node id.",
@@ -273,7 +274,7 @@ const openDiagram = {
   annotations: {
     readOnlyHint: false, destructiveHint: true, idempotentHint: true, untrustedContentHint: true,
   },
-  description: "Use only to replace the current canvas with a different saved diagram chosen from list_diagrams. This changes editor/canvas state and closes any walkthrough. It refuses to overwrite unrendered editor changes unless explicitly authorized. Do not call when the user means the current canvas; graph query tools already operate on it. Returns both previous and new identities.",
+  description: "Use only to replace the current canvas with a different saved diagram chosen from list_diagrams. This changes editor/canvas state and closes any walkthrough. It refuses to overwrite unrendered editor changes unless explicitly authorized. Do not call when the user means the current canvas; graph query tools already operate on it. Returns both previous and new identities, and reports success only after the exact editor source is rendered (active.editorIsRendered=true).",
   inputSchema: {
     type: "object",
     properties: {
@@ -312,6 +313,13 @@ const openDiagram = {
     const summary = await atlasApi.setSourceAndRender(entry.source, { label: `open ${entry.title}`, snapshot: false });
     activeDiagramId = entry.id;
     renderedDiagramId = entry.id;
+    if (!summary.renderOk || atlasApi.getSource() !== atlasApi.getRenderedSource()) {
+      return failure(`"${entry.title}" did not finish rendering, so it was not opened successfully.`, {
+        ...summary,
+        active: activeCanvasState(),
+        suggestedAction: "Retry open_diagram after any current render finishes. If it fails again, inspect the Mermaid source.",
+      });
+    }
     if (!summary.nodeCount && summary.mode !== "canvas") {
       return failure(`"${entry.title}" rendered but produced no indexable nodes.`, summary);
     }
@@ -599,6 +607,13 @@ const applyPatch = {
     }
 
     const summary = await atlasApi.setSourceAndRender(next, { label: description, historyContext });
+    if (!summary.renderOk || atlasApi.getSource() !== next || atlasApi.getRenderedSource() !== next) {
+      return failure("The source changed, but the patched diagram did not finish rendering in a stable state.", {
+        ...summary,
+        sourceStillMatchesPatch: atlasApi.getSource() === next,
+        suggestedAction: "Inspect the editor and retry after the current render finishes. If the patch is still present and unwanted, call undo_last_change.",
+      });
+    }
     if (activeDiagramId) {
       const result = upsertDiagram(library, { id: activeDiagramId, source: next, origin: "agent" });
       library = result.entries;

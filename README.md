@@ -1,44 +1,36 @@
 # Mermaid Atlas
 
-Mermaid Atlas is a shared visual workspace for large Mermaid diagrams. A human can render, search, navigate,
-and edit a software map while an AI agent uses ten WebMCP tools to inspect the same live graph, explain it
-as a guided walkthrough, and safely improve the source.
+Mermaid Atlas is a browser-based visual workspace for exploring and improving large Mermaid diagrams. A human can render, search, navigate, and edit a diagram while an AI agent uses ten WebMCP tools to query the same live graph, trace dependencies, identify structural issues, create guided walkthroughs, and make parser-validated changes with guarded undo.
 
-The product is built for a common codebase problem: architecture knowledge exists, but it is scattered across
-files, diagrams, and individual engineers. Atlas turns that knowledge into a bounded graph interface that an
-agent can query without sending an entire 20,000-edge document into its context.
+Built for the [OpenAI WebMCP Challenge](https://openai.com/webmcp-challenge/), Atlas turns architecture documentation into a bounded graph interface where people and agents can reason together on the same live canvas without loading the entire diagram into the model’s context. Atlas has no application backend; diagram rendering and workspace storage happen locally in the browser.
 
-## Submission links
+## Links
 
-| Submission item | Link |
-| --- | --- |
-| Live application | **TODO — add the public deployment URL** |
-| Public repository | **TODO — add the public repository URL** |
-| Demo video | **TODO — add the public YouTube URL** |
-| License | [MIT](LICENSE) |
+- **Live app:** [mermaid-atlas.vercel.app](https://mermaid-atlas.vercel.app)
+- **Source code:** [github.com/sauranshbhavya/mermaid-atlas](https://github.com/sauranshbhavya/mermaid-atlas)
+- **License:** [MIT](LICENSE)
 
 Nothing is submitted to Devpost from this repository. Before submission, verify the current dates and
 requirements against the [official challenge rules](https://webmcp.devpost.com/rules) and replace every
 placeholder above.
 
-## Why it matters
+## Why we built Mermaid Atlas
 
-Large diagrams are useful to people but awkward for models: passing the whole source is expensive, visually
-rendered labels can be ambiguous, and an unbounded traversal can explode on dense graphs. Atlas gives the agent
-small, purpose-built retrieval calls with stable source identities and gives the human a visual, reversible way
-to inspect the answer.
+Mermaid Atlas began with **Sonny**, a codebase containing approximately 264,464 lines of code. Sauransh had built the project, but when Bhavya needed to understand how it worked architecturally, reading through hundreds of source files and Markdown documents was neither fast nor practical. The system became much easier to understand once its architecture was represented visually.
 
-The challenge story is deliberately focused:
+Existing Mermaid viewers were difficult to use with very large diagrams. Even when a diagram rendered, finding components, following relationships, isolating dependencies, and navigating the overall system remained cumbersome. That experience sparked the idea for Mermaid Atlas, which Bhavya conceived as a workspace designed specifically for exploring large Mermaid graphs.
 
-- The browser and agent share one active architecture graph.
-- The agent can discover diagrams, resolve human language to stable node IDs, inspect dependencies, trace routes,
-  find structural issues, and narrate the result.
-- Every node result includes its Mermaid `sourceLine`, allowing precise changes without reading the full document.
-- Walkthroughs are authored by the agent but paced by the human.
-- Patches are parser-validated, conflict-aware, visible in the activity history, and reversible per diagram.
+Atlas has been tested with diagrams containing more than 500 nodes while retaining searchable navigation, relationship inspection, and interactive graph exploration.
 
-On first load, Atlas opens the bundled **Northwind checkout architecture**: a 31-node service topology plus
-three supporting diagrams. A judge can query it immediately without locating or uploading a fixture.
+## Why WebMCP
+
+A large-diagram viewer helps a person navigate architecture, but WebMCP turns that viewer into a workspace where a person and an AI agent can investigate the system together.
+
+Without WebMCP, an agent would need to interpret the visual interface or ingest the entire Mermaid document into its context. Mermaid Atlas instead exposes the active diagram through structured, purpose-built tools. An agent can resolve natural-language component names to stable node IDs, inspect dependencies, calculate blast radius, trace routes, identify structural issues, and locate the exact source lines involved.
+
+The interaction remains visible to the person using the application. Agent queries can select nodes on the shared canvas, traced routes can become human-paced walkthroughs, and requested edits are parser-validated, recorded in the activity history, and protected by conflict-aware undo.
+
+WebMCP is therefore not an additional control layer placed on top of Atlas—it connects the agent directly to the same graph model, source, selection, and canvas state that the human is already using.
 
 ## WebMCP tool surface
 
